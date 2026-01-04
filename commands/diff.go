@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/roasbeef/hunk/diff"
@@ -103,9 +104,23 @@ func runDiff(ctx context.Context, w io.Writer, paths []string, opts diffOptions)
 		return err
 	}
 
+	// Get untracked files for awareness (only for unstaged diffs).
+	var untracked []string
+	if !opts.staged {
+		status, statusErr := executor.Status(ctx)
+		if statusErr == nil && len(status.UntrackedFiles) > 0 {
+			untracked = status.UntrackedFiles
+		}
+	}
+
 	if diffText == "" {
 		if cfg.JSONOut {
-			return output.FormatJSONEmpty(w)
+			return output.FormatJSONEmptyWithUntracked(w, untracked)
+		}
+
+		if len(untracked) > 0 {
+			fmt.Fprintf(w, "(%d untracked file(s) not shown - use git add)\n",
+				len(untracked))
 		}
 
 		return nil
@@ -117,20 +132,33 @@ func runDiff(ctx context.Context, w io.Writer, paths []string, opts diffOptions)
 	}
 
 	if cfg.JSONOut {
-		return output.FormatJSON(w, parsed)
+		return output.FormatJSONWithUntracked(w, parsed, untracked)
 	}
 
 	// Handle different output modes.
+	var formatErr error
 	switch {
 	case opts.showRaw:
-		return output.FormatRaw(w, parsed)
+		formatErr = output.FormatRaw(w, parsed)
 	case opts.showFiles:
-		return output.FormatFileList(w, parsed)
+		formatErr = output.FormatFileList(w, parsed)
 	case opts.showSummary:
-		return output.FormatTextSummary(w, parsed)
+		formatErr = output.FormatTextSummary(w, parsed)
 	case opts.showStage:
-		return output.FormatStagingCommands(w, parsed)
+		formatErr = output.FormatStagingCommands(w, parsed)
 	default:
-		return output.FormatText(w, parsed, output.DefaultTextOptions())
+		formatErr = output.FormatText(w, parsed, output.DefaultTextOptions())
 	}
+
+	if formatErr != nil {
+		return formatErr
+	}
+
+	// Show note about untracked files.
+	if len(untracked) > 0 && !opts.showRaw {
+		fmt.Fprintf(w, "\n(%d untracked file(s) not shown - use git add)\n",
+			len(untracked))
+	}
+
+	return nil
 }

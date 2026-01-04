@@ -158,7 +158,19 @@ func TestFormatJSONEmpty(t *testing.T) {
 	err := output.FormatJSONEmpty(&buf)
 	require.NoError(t, err)
 
-	require.Equal(t, "{\"files\": []}\n", buf.String())
+	// Should produce valid JSON with empty files array.
+	require.Contains(t, buf.String(), "\"files\": []")
+}
+
+func TestFormatJSONEmptyWithUntracked(t *testing.T) {
+	var buf bytes.Buffer
+	err := output.FormatJSONEmptyWithUntracked(&buf, []string{"new.go", "other.go"})
+	require.NoError(t, err)
+
+	require.Contains(t, buf.String(), "\"files\": []")
+	require.Contains(t, buf.String(), "\"untracked\"")
+	require.Contains(t, buf.String(), "new.go")
+	require.Contains(t, buf.String(), "other.go")
 }
 
 func TestFormatJSON_LineNumbers(t *testing.T) {

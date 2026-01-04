@@ -10,7 +10,8 @@ import (
 
 // DiffOutput is the top-level JSON output structure.
 type DiffOutput struct {
-	Files []FileOutput `json:"files"`
+	Files     []FileOutput `json:"files"`
+	Untracked []string     `json:"untracked,omitempty"`
 }
 
 // FileOutput represents a file in JSON output.
@@ -39,8 +40,14 @@ type LineOutput struct {
 
 // FormatJSON writes the parsed diff as JSON.
 func FormatJSON(w io.Writer, parsed *diff.ParsedDiff) error {
+	return FormatJSONWithUntracked(w, parsed, nil)
+}
+
+// FormatJSONWithUntracked writes the parsed diff as JSON, including untracked files.
+func FormatJSONWithUntracked(w io.Writer, parsed *diff.ParsedDiff, untracked []string) error {
 	output := DiffOutput{
-		Files: make([]FileOutput, 0),
+		Files:     make([]FileOutput, 0),
+		Untracked: untracked,
 	}
 
 	for file := range parsed.Files() {
@@ -101,7 +108,18 @@ func fileStatus(f *diff.FileDiff) string {
 
 // FormatJSONEmpty writes an empty JSON response.
 func FormatJSONEmpty(w io.Writer) error {
-	_, err := w.Write([]byte("{\"files\": []}\n"))
+	return FormatJSONEmptyWithUntracked(w, nil)
+}
 
-	return err
+// FormatJSONEmptyWithUntracked writes an empty JSON response with untracked files.
+func FormatJSONEmptyWithUntracked(w io.Writer, untracked []string) error {
+	output := DiffOutput{
+		Files:     []FileOutput{},
+		Untracked: untracked,
+	}
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+
+	return enc.Encode(output)
 }
