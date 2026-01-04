@@ -1,0 +1,112 @@
+version: "2"
+
+run:
+  go: "1.22"
+  timeout: 5m
+
+linters:
+  default: all
+  disable:
+    # Line length - we'll use 80 char max but not enforce via linter.
+    # Trust developers to keep lines readable.
+    - lll
+
+    # Allow globals for command flags (Cobra pattern).
+    - gochecknoglobals
+
+    # Allow short variable names.
+    - varnamelen
+
+    # Allow TODOs in code.
+    - godox
+
+    # Init functions needed for Cobra commands.
+    - gochecknoinits
+
+    # Deprecated/problematic linters.
+    - bodyclose
+    - contextcheck
+    - nilerr
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - tparallel
+    - unparam
+    - wastedassign
+
+    # Whitespace style conflicts.
+    - wsl
+    - wsl_v5
+
+    # Allow default empty values in structs.
+    - exhaustruct
+
+    # Allow tests in same package.
+    - testpackage
+
+    # Cognitive complexity metrics - not useful for this project.
+    - gocognit
+    - gocyclo
+    - maintidx
+    - cyclop
+
+    # Allow returning interfaces.
+    - ireturn
+
+    # Don't require error wrapping.
+    - wrapcheck
+
+    # Allow dynamic errors.
+    - err113
+
+    # We use ErrXXX naming.
+    - errname
+
+    # Allow returning multiple nils.
+    - nilnil
+
+    # Magic numbers OK in some contexts.
+    - mnd
+
+    # Parallel tests not required.
+    - paralleltest
+
+    # Function ordering is author's choice.
+    - funcorder
+
+  settings:
+    dupl:
+      threshold: 150
+
+    funlen:
+      lines: 150
+      statements: 60
+
+    nestif:
+      min-complexity: 8
+
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
+    rules:
+      - linters:
+          - dupl
+          - funlen
+          - gosec
+        path: _test\.go
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
