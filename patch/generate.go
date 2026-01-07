@@ -59,46 +59,167 @@ func Generate(
 }
 
 // filterHunks returns hunks containing only the selected lines.
-// Context lines are preserved as needed for valid patches.
+// Context lines are preserved as needed for valid patches. When non-contiguous
+// lines are selected within a hunk, the hunk is split into multiple hunks.
 func filterHunks(hunks []*diff.Hunk, sel *diff.FileSelection) []*diff.Hunk {
 	var result []*diff.Hunk
 
 	for _, hunk := range hunks {
 		filtered := filterHunk(hunk, sel)
-		if filtered != nil {
-			result = append(result, filtered)
+		result = append(result, filtered...)
+	}
+
+	return result
+}
+
+// changeBlock represents a contiguous group of selected changes within a hunk.
+// Indices refer to positions in the original hunk's Lines slice.
+type changeBlock struct {
+	startIdx int // Index where this block starts (inclusive).
+	endIdx   int // Index where this block ends (exclusive).
+}
+
+// filterHunk filters a single hunk based on selection. When non-contiguous
+// changes are selected, the hunk is split into multiple hunks, one for each
+// contiguous block of selected changes. Each resulting hunk is independently
+// valid for git apply.
+func filterHunk(hunk *diff.Hunk, sel *diff.FileSelection) []*diff.Hunk {
+	// Find contiguous blocks of selected changes.
+	blocks := findChangeBlocks(hunk, sel)
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	// Build a separate hunk for each block.
+	var result []*diff.Hunk
+	for _, block := range blocks {
+		h := buildHunkFromBlock(hunk, block)
+		if h != nil {
+			result = append(result, h)
 		}
 	}
 
 	return result
 }
 
-// filterHunk filters a single hunk based on selection.
-func filterHunk(hunk *diff.Hunk, sel *diff.FileSelection) *diff.Hunk {
-	var lines []diff.DiffLine
-	hasChanges := false
+// findChangeBlocks identifies contiguous blocks of selected changes within a
+// hunk. Context lines do not break contiguity - only unselected change lines
+// create block boundaries.
+func findChangeBlocks(hunk *diff.Hunk, sel *diff.FileSelection) []changeBlock {
+	var blocks []changeBlock
+	var currentBlock *changeBlock
 
-	for _, line := range hunk.Lines {
-		lineNum := effectiveLineNum(line)
-
-		if line.Op == diff.OpContext {
-			// Keep context lines (will be trimmed later if not needed).
-			lines = append(lines, line)
-		} else if sel.Contains(lineNum) {
-			// Selected change line.
-			lines = append(lines, line)
-			hasChanges = true
+	for i, line := range hunk.Lines {
+		if !line.IsChange() {
+			// Context lines don't affect block boundaries.
+			continue
 		}
-		// Unselected change lines are converted to context.
-		// This maintains line number integrity.
+
+		lineNum := effectiveLineNum(line)
+		isSelected := sel.Contains(lineNum)
+
+		if isSelected {
+			if currentBlock == nil {
+				// Start a new block.
+				currentBlock = &changeBlock{startIdx: i}
+			}
+			// Extend block to include this line.
+			currentBlock.endIdx = i + 1
+		} else {
+			// Unselected change line breaks the current block.
+			if currentBlock != nil {
+				blocks = append(blocks, *currentBlock)
+				currentBlock = nil
+			}
+		}
 	}
 
-	if !hasChanges {
-		return nil
+	// Don't forget to close the final block.
+	if currentBlock != nil {
+		blocks = append(blocks, *currentBlock)
 	}
 
-	// Build new hunk with proper context.
-	return buildFilteredHunk(hunk, lines)
+	return blocks
+}
+
+// buildHunkFromBlock creates a valid hunk from a change block. It includes
+// up to maxContext (3) lines of context before and after the block, stopping
+// at unselected change lines.
+func buildHunkFromBlock(original *diff.Hunk, block changeBlock) *diff.Hunk {
+	const maxContext = 3
+
+	// Expand backward to include context lines.
+	startIdx := block.startIdx
+	contextBefore := 0
+	for i := block.startIdx - 1; i >= 0 && contextBefore < maxContext; i-- {
+		if original.Lines[i].Op == diff.OpContext {
+			startIdx = i
+			contextBefore++
+		} else {
+			// Hit an unselected change line, stop expanding.
+			break
+		}
+	}
+
+	// Expand forward to include context lines.
+	endIdx := block.endIdx
+	contextAfter := 0
+	for i := block.endIdx; i < len(original.Lines) && contextAfter < maxContext; i++ {
+		if original.Lines[i].Op == diff.OpContext {
+			endIdx = i + 1
+			contextAfter++
+		} else {
+			// Hit an unselected change line, stop expanding.
+			break
+		}
+	}
+
+	// Copy the selected lines.
+	lines := make([]diff.DiffLine, endIdx-startIdx)
+	copy(lines, original.Lines[startIdx:endIdx])
+
+	result := &diff.Hunk{
+		Section: original.Section,
+		Lines:   lines,
+	}
+
+	// Set start line numbers from the first line.
+	if len(lines) > 0 {
+		first := lines[0]
+		if first.OldLineNum > 0 {
+			result.OldStart = first.OldLineNum
+		} else {
+			// Addition at start - find a previous line's old number.
+			for i := startIdx - 1; i >= 0; i-- {
+				if original.Lines[i].OldLineNum > 0 {
+					result.OldStart = original.Lines[i].OldLineNum + 1
+					break
+				}
+			}
+			if result.OldStart == 0 {
+				result.OldStart = original.OldStart
+			}
+		}
+
+		if first.NewLineNum > 0 {
+			result.NewStart = first.NewLineNum
+		} else {
+			// Deletion at start - find a previous line's new number.
+			for i := startIdx - 1; i >= 0; i-- {
+				if original.Lines[i].NewLineNum > 0 {
+					result.NewStart = original.Lines[i].NewLineNum + 1
+					break
+				}
+			}
+			if result.NewStart == 0 {
+				result.NewStart = original.NewStart
+			}
+		}
+	}
+
+	result.RecalculateLineCounts()
+
+	return result
 }
 
 // effectiveLineNum returns the line number to use for selection matching.
@@ -109,72 +230,6 @@ func effectiveLineNum(line diff.DiffLine) int {
 	}
 
 	return line.OldLineNum
-}
-
-// buildFilteredHunk constructs a new hunk with trimmed context.
-func buildFilteredHunk(
-	original *diff.Hunk, lines []diff.DiffLine,
-) *diff.Hunk {
-
-	const maxContext = 3
-
-	// Find first and last change indices.
-	firstChange := -1
-	lastChange := -1
-
-	for i, line := range lines {
-		if line.IsChange() {
-			if firstChange == -1 {
-				firstChange = i
-			}
-			lastChange = i
-		}
-	}
-
-	if firstChange == -1 {
-		return nil
-	}
-
-	// Calculate context bounds.
-	startIdx := firstChange - maxContext
-	if startIdx < 0 {
-		startIdx = 0
-	}
-
-	endIdx := lastChange + maxContext + 1
-	if endIdx > len(lines) {
-		endIdx = len(lines)
-	}
-
-	// Slice to keep only needed lines.
-	lines = lines[startIdx:endIdx]
-
-	// Reconstruct the hunk with correct line numbers.
-	result := &diff.Hunk{
-		Section: original.Section,
-		Lines:   lines,
-	}
-
-	// Set start line numbers from first line.
-	if len(lines) > 0 {
-		first := lines[0]
-		if first.OldLineNum > 0 {
-			result.OldStart = first.OldLineNum
-		} else {
-			// For additions at start, use previous context if available.
-			result.OldStart = original.OldStart
-		}
-
-		if first.NewLineNum > 0 {
-			result.NewStart = first.NewLineNum
-		} else {
-			result.NewStart = original.NewStart
-		}
-	}
-
-	result.RecalculateLineCounts()
-
-	return result
 }
 
 // GenerateForFile creates a patch for a single file with all its changes.

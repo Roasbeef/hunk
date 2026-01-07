@@ -226,3 +226,209 @@ func TestGenerateForHunk(t *testing.T) {
 	require.Contains(t, s, "+// First hunk.")
 	require.NotContains(t, s, "+    // Second hunk.")
 }
+
+// TestGenerate_NonContiguousSelections tests that non-contiguous line
+// selections within a single hunk are properly split into multiple hunks.
+func TestGenerate_NonContiguousSelections(t *testing.T) {
+	tests := []struct {
+		name       string
+		diffText   string
+		selections []string
+		wantHunks  int // Expected number of @@ markers (2 per hunk).
+		validate   func(t *testing.T, result []byte)
+	}{
+		{
+			name: "two non-contiguous additions in single hunk",
+			diffText: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,7 +1,10 @@
+ package main
++// Line 2 - SELECTED.
+ func foo() {}
+ func bar() {}
+ func baz() {}
++// Line 6 - NOT selected.
+ func qux() {}
++// Line 8 - SELECTED.
+ func main() {}
+`,
+			selections: []string{"main.go:2,8"},
+			wantHunks:  2,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "+// Line 2 - SELECTED.")
+				require.Contains(t, s, "+// Line 8 - SELECTED.")
+				require.NotContains(t, s, "+// Line 6 - NOT selected.")
+			},
+		},
+		{
+			name: "three changes select first and last",
+			diffText: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,7 +1,10 @@
+ package main
++// FIRST.
+ func a() {}
++// MIDDLE.
+ func b() {}
++// LAST.
+ func c() {}
+`,
+			selections: []string{"main.go:2,6"},
+			wantHunks:  2,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "+// FIRST.")
+				require.Contains(t, s, "+// LAST.")
+				require.NotContains(t, s, "+// MIDDLE.")
+			},
+		},
+		{
+			name: "adjacent selections should NOT split",
+			diffText: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,3 +1,6 @@
+ package main
++// Line 2.
++// Line 3.
++// Line 4.
+ func main() {}
+`,
+			selections: []string{"main.go:2-4"},
+			wantHunks:  1,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "+// Line 2.")
+				require.Contains(t, s, "+// Line 3.")
+				require.Contains(t, s, "+// Line 4.")
+			},
+		},
+		{
+			name: "single line from multi-line hunk",
+			diffText: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,5 +1,9 @@
+ package main
++// A.
++// B.
++// C.
++// D.
+ func main() {}
+`,
+			selections: []string{"main.go:3"},
+			wantHunks:  1,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "+// B.")
+				require.NotContains(t, s, "+// A.")
+				require.NotContains(t, s, "+// C.")
+				require.NotContains(t, s, "+// D.")
+			},
+		},
+		{
+			name: "deletions non-contiguous",
+			diffText: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,7 +1,4 @@
+ package main
+-// DELETE 1.
+ func foo() {}
+-// DELETE 2.
+ func bar() {}
+-// DELETE 3.
+ func main() {}
+`,
+			selections: []string{"main.go:2,6"}, // Old file line numbers.
+			wantHunks:  2,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "-// DELETE 1.")
+				require.Contains(t, s, "-// DELETE 3.")
+				require.NotContains(t, s, "-// DELETE 2.")
+			},
+		},
+		{
+			name: "all changes selected produces single hunk",
+			diffText: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,5 +1,8 @@
+ package main
++// A.
++// B.
++// C.
+ func main() {}
+`,
+			selections: []string{"main.go:2-4"},
+			wantHunks:  1,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "+// A.")
+				require.Contains(t, s, "+// B.")
+				require.Contains(t, s, "+// C.")
+			},
+		},
+		{
+			name: "scattered single lines",
+			diffText: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,9 +1,14 @@
+ package main
++// 2 SELECTED.
+ func a() {}
++// 4 skip.
+ func b() {}
++// 6 SELECTED.
+ func c() {}
++// 8 skip.
+ func d() {}
++// 10 SELECTED.
+ func main() {}
+`,
+			selections: []string{"main.go:2,6,10"},
+			wantHunks:  3,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "+// 2 SELECTED.")
+				require.Contains(t, s, "+// 6 SELECTED.")
+				require.Contains(t, s, "+// 10 SELECTED.")
+				require.NotContains(t, s, "+// 4 skip.")
+				require.NotContains(t, s, "+// 8 skip.")
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := diff.Parse(tc.diffText)
+			require.NoError(t, err)
+
+			selections, err := diff.ParseSelections(tc.selections)
+			require.NoError(t, err)
+
+			result, err := patch.Generate(parsed, selections)
+			require.NoError(t, err)
+			require.NotEmpty(t, result)
+
+			// Count @@ markers to determine number of hunks.
+			s := string(result)
+			hunkCount := strings.Count(s, "@@") / 2
+			require.Equal(t, tc.wantHunks, hunkCount,
+				"expected %d hunks, got %d.\nPatch:\n%s",
+				tc.wantHunks, hunkCount, s)
+
+			if tc.validate != nil {
+				tc.validate(t, result)
+			}
+
+			// Verify valid patch format.
+			verifyValidPatch(t, result)
+		})
+	}
+}
