@@ -34,8 +34,9 @@ func NewRootCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "hunk",
-		Short: "Sparse partial commits for AI agents",
+		Use:     "hunk",
+		Short:   "Sparse partial commits for AI agents",
+		Version: Version,
 		Long: `Hunk enables precise, line-level staging for git commits.
 
 Designed for AI agents that need to make surgical changes to codebases,
@@ -90,6 +91,7 @@ Examples:
 	cmd.AddCommand(NewCommitCmd())
 	cmd.AddCommand(NewResetCmd())
 	cmd.AddCommand(NewApplyPatchCmd())
+	cmd.AddCommand(NewVersionCmd())
 
 	return cmd
 }
