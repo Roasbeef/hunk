@@ -83,6 +83,35 @@ hunk reset                   # unstage everything
 hunk reset main.go           # unstage just one file
 ```
 
+## Interactive Rebase
+
+Hunk also provides programmatic interactive rebase for agents. Traditional `git rebase -i` opens an editor—impossible for automated workflows. Hunk's rebase commands let you specify actions declaratively:
+
+```bash
+# See what commits would be rebased
+hunk rebase list --onto main
+hunk rebase list --onto main --json  # machine-readable
+
+# Execute rebase with explicit actions
+hunk rebase run --onto main abc123,def456           # pick all
+hunk rebase run --onto main pick:abc123,squash:def456,drop:ghi789
+
+# Handle conflicts
+hunk rebase status              # check current state
+hunk rebase continue            # after resolving conflicts
+hunk rebase abort               # cancel the rebase
+hunk rebase skip                # skip problematic commit
+```
+
+For complex operations, use JSON input:
+
+```bash
+echo '{"actions":[{"action":"pick","commit":"abc123"},{"action":"squash","commit":"def456"}]}' | \
+  hunk rebase run --onto main --spec -
+```
+
+Supported actions: `pick`, `reword`, `squash`, `fixup`, `drop`, `edit`, `exec`.
+
 ## Why This Matters for Agents
 
 Traditional git workflows assume a human is making decisions interactively. An agent, however, operates programmatically and needs deterministic, scriptable commands with structured output.
