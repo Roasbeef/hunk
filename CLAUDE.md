@@ -59,6 +59,7 @@ Line numbers refer to **new file** lines (after edits), matching how editors dis
 - 80-character line limit (not enforced by linter, trust developers).
 - Comments use complete sentences ending with periods.
 - JSON field names use snake_case (`old_line`, `new_line`).
-- Comments focus on the why/how vs just the plain waht.
+- Comments focus on the why/how vs just the plain what.
 - No `internal/` packages - all packages are at top level.
 - Test files use `_test` suffix but stay in same package (not `package foo_test`).
+- Test function names use camelCase, not underscores (e.g., `TestRebaseRunSimple` not `TestRebaseRun_Simple`).
