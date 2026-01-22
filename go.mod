@@ -6,6 +6,7 @@ require (
 	github.com/sourcegraph/go-diff v0.7.0
 	github.com/spf13/cobra v1.8.1
 	github.com/stretchr/testify v1.9.0
+	pgregory.net/rapid v1.2.0
 )
 
 require (
@@ -14,5 +15,4 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	pgregory.net/rapid v1.2.0 // indirect
 )

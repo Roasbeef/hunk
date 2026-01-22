@@ -46,6 +46,8 @@ func (op LineOp) Prefix() byte {
 }
 
 // DiffLine represents a single line in a diff hunk.
+//
+//nolint:revive // Renaming to Line would be a breaking API change.
 type DiffLine struct {
 	// Op is the type of operation (context, add, delete).
 	Op LineOp
@@ -75,12 +77,12 @@ func (l DiffLine) LineRef() string {
 		old = strconv.Itoa(l.OldLineNum)
 	}
 
-	new := "-"
+	newNum := "-"
 	if l.NewLineNum > 0 {
-		new = strconv.Itoa(l.NewLineNum)
+		newNum = strconv.Itoa(l.NewLineNum)
 	}
 
-	return old + ":" + new
+	return old + ":" + newNum
 }
 
 // IsChange returns true if this line represents a change (add or delete).
@@ -101,19 +103,19 @@ func (l DiffLine) EffectiveLineNum() int {
 
 // Format returns a human-readable format with line numbers.
 func (l DiffLine) Format() string {
-	old := "-"
+	var old string
 	if l.OldLineNum > 0 {
 		old = fmt.Sprintf("%4d", l.OldLineNum)
 	} else {
 		old = "    "
 	}
 
-	new := "-"
+	var newNum string
 	if l.NewLineNum > 0 {
-		new = fmt.Sprintf("%4d", l.NewLineNum)
+		newNum = fmt.Sprintf("%4d", l.NewLineNum)
 	} else {
-		new = "    "
+		newNum = "    "
 	}
 
-	return fmt.Sprintf("%s %s %c%s", old, new, l.Op.Prefix(), l.Content)
+	return fmt.Sprintf("%s %s %c%s", old, newNum, l.Op.Prefix(), l.Content)
 }

@@ -46,9 +46,9 @@ func makeTestFileDiff() *diff.FileDiff {
 
 func TestFileDiff_Path(t *testing.T) {
 	tests := []struct {
-		name      string
-		file      *diff.FileDiff
-		wantPath  string
+		name     string
+		file     *diff.FileDiff
+		wantPath string
 	}{
 		{
 			name:     "normal modification",
@@ -168,7 +168,7 @@ func TestFileDiff_HunksInRange(t *testing.T) {
 
 	// Range covering nothing.
 	hunks = file.HunksInRange(50, 60)
-	require.Len(t, hunks, 0)
+	require.Empty(t, hunks)
 }
 
 func TestFileDiff_Format(t *testing.T) {

@@ -65,7 +65,7 @@ func TestParse(t *testing.T) {
 
 				require.Equal(t, diff.OpAdd, addLine.Op)
 				require.Equal(t, "// New comment.", addLine.Content)
-				require.Greater(t, addLine.NewLineNum, 0)
+				require.Positive(t, addLine.NewLineNum)
 				require.Equal(t, 0, addLine.OldLineNum)
 			},
 		},
@@ -98,7 +98,7 @@ func TestParse(t *testing.T) {
 				}
 
 				require.Equal(t, "// Old comment.", delLine.Content)
-				require.Greater(t, delLine.OldLineNum, 0)
+				require.Positive(t, delLine.OldLineNum)
 				require.Equal(t, 0, delLine.NewLineNum)
 			},
 		},
@@ -283,7 +283,7 @@ func TestLineNumbers(t *testing.T) {
 		}
 	}
 
-	require.Greater(t, delLine.OldLineNum, 0)
+	require.Positive(t, delLine.OldLineNum)
 	require.Equal(t, 0, delLine.NewLineNum)
 
 	// First added line.
@@ -297,7 +297,7 @@ func TestLineNumbers(t *testing.T) {
 	}
 
 	require.Equal(t, 0, addLine.OldLineNum)
-	require.Greater(t, addLine.NewLineNum, 0)
+	require.Positive(t, addLine.NewLineNum)
 }
 
 func TestLinesWithContext(t *testing.T) {

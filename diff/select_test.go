@@ -1,6 +1,7 @@
 package diff_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/roasbeef/hunk/diff"
@@ -163,13 +164,7 @@ func TestFileSelectionMerge(t *testing.T) {
 				rangeStrs = append(rangeStrs, r.String())
 			}
 
-			result := ""
-			for i, rs := range rangeStrs {
-				if i > 0 {
-					result += ","
-				}
-				result += rs
-			}
+			result := strings.Join(rangeStrs, ",")
 
 			require.Equal(t, tc.wantRanges, result)
 		})
@@ -181,7 +176,7 @@ func TestSelectionMap(t *testing.T) {
 		{Path: "main.go", Ranges: []diff.LineRange{{Start: 10, End: 20}}},
 		{Path: "utils.go", Ranges: []diff.LineRange{{Start: 5, End: 10}}},
 		{
-			Path: "main.go",
+			Path:   "main.go",
 			Ranges: []diff.LineRange{{Start: 30, End: 40}},
 		}, // Same file.
 	}

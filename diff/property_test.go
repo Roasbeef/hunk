@@ -2,6 +2,7 @@ package diff_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/roasbeef/hunk/diff"
@@ -72,7 +73,7 @@ func TestFileSelectionMergeProperty(t *testing.T) {
 		numRanges := rapid.IntRange(1, 10).Draw(t, "numRanges")
 		var ranges []diff.LineRange
 
-		for i := 0; i < numRanges; i++ {
+		for i := range numRanges {
 			start := rapid.IntRange(1, 100).Draw(t, fmt.Sprintf("start%d", i))
 			length := rapid.IntRange(0, 20).Draw(t, fmt.Sprintf("length%d", i))
 			ranges = append(ranges, diff.LineRange{Start: start, End: start + length})
@@ -125,19 +126,20 @@ func TestParseFileSelectionProperty(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate valid path.
 		pathParts := rapid.IntRange(1, 3).Draw(t, "pathParts")
-		path := ""
-		for i := 0; i < pathParts; i++ {
+		var pathBuilder strings.Builder
+		for i := range pathParts {
 			if i > 0 {
-				path += "/"
+				pathBuilder.WriteString("/")
 			}
-			path += rapid.StringMatching(`[a-z][a-z0-9_]*`).Draw(t, fmt.Sprintf("part%d", i))
+			pathBuilder.WriteString(rapid.StringMatching(`[a-z][a-z0-9_]*`).Draw(t, fmt.Sprintf("part%d", i)))
 		}
-		path += ".go"
+		pathBuilder.WriteString(".go")
+		path := pathBuilder.String()
 
 		// Generate valid ranges.
 		numRanges := rapid.IntRange(1, 5).Draw(t, "numRanges")
 		rangeStrs := make([]string, numRanges)
-		for i := 0; i < numRanges; i++ {
+		for i := range numRanges {
 			start := rapid.IntRange(1, 1000).Draw(t, fmt.Sprintf("start%d", i))
 			isSingle := rapid.Bool().Draw(t, fmt.Sprintf("single%d", i))
 			if isSingle {
@@ -149,10 +151,7 @@ func TestParseFileSelectionProperty(t *testing.T) {
 		}
 
 		// Build selection string.
-		rangeSpec := rangeStrs[0]
-		for i := 1; i < len(rangeStrs); i++ {
-			rangeSpec += "," + rangeStrs[i]
-		}
+		rangeSpec := strings.Join(rangeStrs, ",")
 		input := path + ":" + rangeSpec
 
 		// Parse it.
@@ -231,7 +230,7 @@ func TestHunkStatsConsistency(t *testing.T) {
 		expectedAdds := 0
 		expectedDels := 0
 
-		for i := 0; i < numLines; i++ {
+		for i := range numLines {
 			op := diff.LineOp(rapid.IntRange(0, 2).Draw(t, fmt.Sprintf("op%d", i)))
 			lines = append(lines, diff.DiffLine{Op: op})
 

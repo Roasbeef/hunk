@@ -13,7 +13,6 @@ import (
 func Generate(
 	parsed *diff.ParsedDiff, selections []*diff.FileSelection,
 ) ([]byte, error) {
-
 	// Build a map for fast lookup.
 	selMap := diff.NewSelectionMap(selections)
 
@@ -125,12 +124,10 @@ func findChangeBlocks(hunk *diff.Hunk, sel *diff.FileSelection) []changeBlock {
 			}
 			// Extend block to include this line.
 			currentBlock.endIdx = i + 1
-		} else {
+		} else if currentBlock != nil {
 			// Unselected change line breaks the current block.
-			if currentBlock != nil {
-				blocks = append(blocks, *currentBlock)
-				currentBlock = nil
-			}
+			blocks = append(blocks, *currentBlock)
+			currentBlock = nil
 		}
 	}
 

@@ -131,6 +131,17 @@ tidy:
 	$(GOCC) mod tidy
 	cd $(TOOLS_DIR) && $(GOCC) mod tidy
 
+#? tidy-check: Check that go.mod is tidy
+.PHONY: tidy-check
+tidy-check: tidy
+	@$(call print, "Checking mod tidy results.")
+	@if test -n "$$(git status --porcelain go.mod go.sum $(TOOLS_DIR)/go.mod $(TOOLS_DIR)/go.sum)"; then \
+		echo "Modules not tidy. Run 'make tidy'."; \
+		git status go.mod go.sum $(TOOLS_DIR)/go.mod $(TOOLS_DIR)/go.sum; \
+		git diff go.mod go.sum $(TOOLS_DIR)/go.mod $(TOOLS_DIR)/go.sum; \
+		exit 1; \
+	fi
+
 #? clean: Remove build artifacts
 .PHONY: clean
 clean:
