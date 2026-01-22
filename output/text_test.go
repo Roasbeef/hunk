@@ -188,7 +188,7 @@ func TestDefaultTextOptions(t *testing.T) {
 	require.True(t, opts.Stats)
 }
 
-func TestFormatText_BinaryFile(t *testing.T) {
+func TestFormatText_BinaryFile(_ *testing.T) {
 	// Create a file marked as binary.
 	file := &diff.FileDiff{
 		OldName:  "image.png",

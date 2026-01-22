@@ -16,7 +16,7 @@ func NewVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print the version number",
 		Long:  `Print the version number of hunk.`,
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, _ []string) {
 			printVersion(cmd.OutOrStdout())
 		},
 	}

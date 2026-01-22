@@ -44,7 +44,6 @@ func DefaultTextOptions() TextOptions {
 func FormatText(
 	w io.Writer, parsed *diff.ParsedDiff, opts TextOptions,
 ) error {
-
 	for file := range parsed.Files() {
 		if err := formatFile(w, file, opts); err != nil {
 			return err

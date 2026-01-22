@@ -29,7 +29,7 @@ This is equivalent to 'git diff --cached' but with hunk-style formatting.`,
 
   # Show raw unified diff
   hunk preview --raw`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runPreview(cmd.Context(), cmd.OutOrStdout(), showRaw)
 		},
 	}

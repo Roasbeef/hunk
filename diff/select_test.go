@@ -1,6 +1,7 @@
 package diff_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/roasbeef/hunk/diff"
@@ -163,13 +164,7 @@ func TestFileSelectionMerge(t *testing.T) {
 				rangeStrs = append(rangeStrs, r.String())
 			}
 
-			result := ""
-			for i, rs := range rangeStrs {
-				if i > 0 {
-					result += ","
-				}
-				result += rs
-			}
+			result := strings.Join(rangeStrs, ",")
 
 			require.Equal(t, tc.wantRanges, result)
 		})

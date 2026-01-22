@@ -64,7 +64,7 @@ Examples:
 
   # Apply a patch directly to staging
   hunk apply-patch < changes.diff`,
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 			// Store config in context for subcommands.
 			cfg := Config{
 				WorkDir: workDir,

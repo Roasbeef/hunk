@@ -115,7 +115,7 @@ func TestSkipLines(t *testing.T) {
 	for line := range diff.SkipLines(linesIter(lines), 100) {
 		skipped = append(skipped, line)
 	}
-	require.Len(t, skipped, 0)
+	require.Empty(t, skipped)
 }
 
 func TestChunkByOp(t *testing.T) {

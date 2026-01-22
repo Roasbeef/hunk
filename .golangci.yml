@@ -36,6 +36,7 @@ linters:
 
     # Whitespace style conflicts.
     - wsl
+    - wsl_v5
 
     # Allow default empty values in structs.
     - exhaustruct
@@ -75,6 +76,37 @@ linters:
 
     # Depguard not configured - disable to avoid false positives.
     - depguard
+
+    # Performance suggestions - not critical for correctness.
+    - prealloc
+    - perfsprint
+
+    # Test helpers in table-driven tests don't need t.Helper().
+    - thelper
+
+    # Named returns are fine in some contexts.
+    - nonamedreturns
+
+    # Inline error handling is idiomatic in some cases.
+    - noinlineerr
+
+    # Return after newline is a style preference.
+    - nlreturn
+
+    # intrange suggestions not critical.
+    - intrange
+
+    # Testify usage preferences - not critical.
+    - testifylint
+
+    # usetesting suggestions for t.TempDir() - not critical.
+    - usetesting
+
+    # Exhaustive switch - we handle default cases.
+    - exhaustive
+
+    # Nested if complexity - acceptable in some contexts.
+    - nestif
 
   settings:
     dupl:

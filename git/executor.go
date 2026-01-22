@@ -25,7 +25,6 @@ func NewShellExecutor(workDir string) *ShellExecutor {
 func (e *ShellExecutor) run(
 	ctx context.Context, stdin io.Reader, args ...string,
 ) (string, error) {
-
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if e.WorkDir != "" {
 		cmd.Dir = e.WorkDir
@@ -50,7 +49,6 @@ func (e *ShellExecutor) run(
 func (e *ShellExecutor) Diff(
 	ctx context.Context, paths ...string,
 ) (string, error) {
-
 	args := []string{"diff", "--no-color"}
 	args = append(args, paths...)
 
@@ -61,7 +59,6 @@ func (e *ShellExecutor) Diff(
 func (e *ShellExecutor) DiffCached(
 	ctx context.Context, paths ...string,
 ) (string, error) {
-
 	args := []string{"diff", "--cached", "--no-color"}
 	args = append(args, paths...)
 
@@ -72,7 +69,6 @@ func (e *ShellExecutor) DiffCached(
 func (e *ShellExecutor) ApplyPatch(
 	ctx context.Context, patch io.Reader,
 ) error {
-
 	_, err := e.run(ctx, patch, "apply", "--cached", "-")
 
 	return err

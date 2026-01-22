@@ -24,7 +24,7 @@ This is a thin wrapper around 'git commit' for convenience.`,
 
   # Stage and commit in one command
   hunk stage main.go:10-20 && hunk commit -m "fix bug"`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if message == "" {
 				return fmt.Errorf("commit message required (-m)")
 			}
@@ -37,7 +37,7 @@ This is a thin wrapper around 'git commit' for convenience.`,
 		&message, "message", "m", "",
 		"commit message",
 	)
-	cmd.MarkFlagRequired("message")
+	_ = cmd.MarkFlagRequired("message")
 
 	return cmd
 }

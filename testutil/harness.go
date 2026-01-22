@@ -73,7 +73,7 @@ func (r *GitTestRepo) WriteFile(path, content string) {
 	err := os.MkdirAll(dir, 0755)
 	require.NoError(r.t, err)
 
-	err = os.WriteFile(fullPath, []byte(content), 0644)
+	err = os.WriteFile(fullPath, []byte(content), 0600)
 	require.NoError(r.t, err)
 }
 
@@ -138,7 +138,6 @@ type ComparisonTest struct {
 func NewComparisonTest(
 	t *testing.T, setup func(r *GitTestRepo),
 ) *ComparisonTest {
-
 	t.Helper()
 
 	expected := NewGitTestRepo(t)
