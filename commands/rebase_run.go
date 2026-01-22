@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"strings"
 
 	"github.com/roasbeef/hunk/git"
 	"github.com/roasbeef/hunk/rebase"
@@ -157,8 +159,10 @@ func runRebaseRun(
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	// Construct the editor command.
-	editor := fmt.Sprintf("%s rebase _apply-spec %s", hunkPath, tmpPath)
+	// Construct the editor command. On Windows, git uses MSYS bash for
+	// GIT_SEQUENCE_EDITOR, which requires forward slashes and quoting
+	// for paths with spaces.
+	editor := formatEditorCommand(hunkPath, tmpPath)
 
 	// Start the rebase.
 	if err := executor.RebaseStart(ctx, onto, editor); err != nil {
@@ -226,6 +230,22 @@ func formatRebaseRunJSON(w io.Writer, state *git.RebaseState) error {
 	enc.SetIndent("", "  ")
 
 	return enc.Encode(output)
+}
+
+// formatEditorCommand constructs the GIT_SEQUENCE_EDITOR command string.
+// On Windows, git uses MSYS bash which requires forward slashes and proper
+// quoting for paths containing spaces.
+func formatEditorCommand(hunkPath, specPath string) string {
+	if runtime.GOOS == "windows" {
+		// Convert backslashes to forward slashes for MSYS bash.
+		hunkPath = strings.ReplaceAll(hunkPath, "\\", "/")
+		specPath = strings.ReplaceAll(specPath, "\\", "/")
+
+		// Quote paths in case they contain spaces.
+		return fmt.Sprintf(`"%s" rebase _apply-spec "%s"`, hunkPath, specPath)
+	}
+
+	return fmt.Sprintf("%s rebase _apply-spec %s", hunkPath, specPath)
 }
 
 func formatRebaseRunText(w io.Writer, state *git.RebaseState) error {
