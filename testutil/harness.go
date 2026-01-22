@@ -28,7 +28,8 @@ func NewGitTestRepo(t *testing.T) *GitTestRepo {
 	t.Cleanup(repo.cleanup)
 
 	// Initialize git repo with basic config.
-	repo.Git("init")
+	// Use -b main to ensure consistent branch name across git versions.
+	repo.Git("init", "-b", "main")
 	repo.Git("config", "user.email", "test@test.com")
 	repo.Git("config", "user.name", "Test User")
 
