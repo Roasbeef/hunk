@@ -181,7 +181,7 @@ func TestSelectionMap(t *testing.T) {
 		{Path: "main.go", Ranges: []diff.LineRange{{Start: 10, End: 20}}},
 		{Path: "utils.go", Ranges: []diff.LineRange{{Start: 5, End: 10}}},
 		{
-			Path: "main.go",
+			Path:   "main.go",
 			Ranges: []diff.LineRange{{Start: 30, End: 40}},
 		}, // Same file.
 	}

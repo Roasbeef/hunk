@@ -74,6 +74,9 @@ linters:
     # Function ordering is author's choice.
     - funcorder
 
+    # Depguard not configured - disable to avoid false positives.
+    - depguard
+
   settings:
     dupl:
       threshold: 150

@@ -159,9 +159,9 @@ func TestHunk_ContainsLine(t *testing.T) {
 	hunk := makeTestHunk()
 
 	// Added lines use NewLineNum.
-	require.True(t, hunk.ContainsLine(11))  // added1
-	require.True(t, hunk.ContainsLine(12))  // added2
-	require.True(t, hunk.ContainsLine(11))  // deleted uses OldLineNum
+	require.True(t, hunk.ContainsLine(11)) // added1
+	require.True(t, hunk.ContainsLine(12)) // added2
+	require.True(t, hunk.ContainsLine(11)) // deleted uses OldLineNum
 
 	// Context lines are not changes.
 	require.False(t, hunk.ContainsLine(10)) // context

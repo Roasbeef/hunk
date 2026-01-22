@@ -46,9 +46,9 @@ func makeTestFileDiff() *diff.FileDiff {
 
 func TestFileDiff_Path(t *testing.T) {
 	tests := []struct {
-		name      string
-		file      *diff.FileDiff
-		wantPath  string
+		name     string
+		file     *diff.FileDiff
+		wantPath string
 	}{
 		{
 			name:     "normal modification",
