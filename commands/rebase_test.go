@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -33,7 +34,12 @@ func buildHunkBinary(t *testing.T) string {
 			return
 		}
 
-		hunkBinaryPath = filepath.Join(tmpDir, "hunk")
+		binaryName := "hunk"
+		if runtime.GOOS == "windows" {
+			binaryName = "hunk.exe"
+		}
+
+		hunkBinaryPath = filepath.Join(tmpDir, binaryName)
 
 		cmd := exec.Command("go", "build", "-o", hunkBinaryPath, "./cmd/hunk")
 		cmd.Dir = filepath.Join(os.Getenv("GOPATH"), "src/github.com/roasbeef/hunk")
