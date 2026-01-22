@@ -36,7 +36,6 @@ linters:
 
     # Whitespace style conflicts.
     - wsl
-    - wsl_v5
 
     # Allow default empty values in structs.
     - exhaustruct
