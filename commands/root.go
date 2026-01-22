@@ -92,6 +92,7 @@ Examples:
 	cmd.AddCommand(NewResetCmd())
 	cmd.AddCommand(NewApplyPatchCmd())
 	cmd.AddCommand(NewVersionCmd())
+	cmd.AddCommand(NewRebaseCmd())
 
 	return cmd
 }

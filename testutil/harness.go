@@ -2,6 +2,7 @@
 package testutil
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,7 +28,8 @@ func NewGitTestRepo(t *testing.T) *GitTestRepo {
 	t.Cleanup(repo.cleanup)
 
 	// Initialize git repo with basic config.
-	repo.Git("init")
+	// Use -b main to ensure consistent branch name across git versions.
+	repo.Git("init", "-b", "main")
 	repo.Git("config", "user.email", "test@test.com")
 	repo.Git("config", "user.name", "Test User")
 
@@ -186,4 +188,51 @@ func (c *ComparisonTest) AssertSameUnstagedDiff() {
 
 	require.Equal(c.t, expDiff, actDiff,
 		"unstaged diffs differ between expected and actual")
+}
+
+// CreateBranch creates and switches to a new branch.
+func (r *GitTestRepo) CreateBranch(name string) {
+	r.t.Helper()
+
+	r.Git("checkout", "-b", name)
+}
+
+// CheckoutBranch switches to an existing branch.
+func (r *GitTestRepo) CheckoutBranch(name string) {
+	r.t.Helper()
+
+	r.Git("checkout", name)
+}
+
+// GetShortHash returns the short hash of HEAD.
+func (r *GitTestRepo) GetShortHash() string {
+	r.t.Helper()
+
+	out := r.Git("rev-parse", "--short", "HEAD")
+	// Remove trailing newline.
+	if len(out) > 0 && out[len(out)-1] == '\n' {
+		out = out[:len(out)-1]
+	}
+
+	return out
+}
+
+// GetCommitCount returns the number of commits in the repository.
+func (r *GitTestRepo) GetCommitCount() int {
+	r.t.Helper()
+
+	out := r.Git("rev-list", "--count", "HEAD")
+	// Parse the count.
+	var count int
+	_, err := fmt.Sscanf(out, "%d", &count)
+	require.NoError(r.t, err)
+
+	return count
+}
+
+// LogOneline returns git log --oneline output.
+func (r *GitTestRepo) LogOneline() string {
+	r.t.Helper()
+
+	return r.Git("log", "--oneline")
 }

@@ -2,6 +2,23 @@
 
 This document outlines potential improvements to make hunk even more effective for AI coding agents. These ideas emerged from real-world testing and thinking about the end-to-end agent workflow.
 
+## Recently Completed
+
+### Programmatic Interactive Rebase
+
+Added `hunk rebase` command group for agent-friendly interactive rebases without interactive prompts:
+
+```bash
+hunk rebase list --onto main [--json]    # List commits to rebase
+hunk rebase run --onto main SPEC         # Execute rebase declaratively
+hunk rebase status [--json]              # Check rebase state
+hunk rebase continue/abort/skip          # Control in-progress rebase
+```
+
+Specification syntax supports both CLI shorthand (`pick:abc123,squash:def456`) and JSON input for complex operations. Uses `GIT_SEQUENCE_EDITOR` mechanism internally.
+
+---
+
 ## The Agent Workflow Today
 
 An agent using hunk follows this pattern:
