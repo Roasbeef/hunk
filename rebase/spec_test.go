@@ -51,37 +51,37 @@ func TestActionType_ShortForm(t *testing.T) {
 	}
 }
 
-func TestRebaseAction_Validate(t *testing.T) {
+func TestAction_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
-		action  RebaseAction
+		action  Action
 		wantErr string
 	}{
 		{
 			name:   "valid pick",
-			action: RebaseAction{Action: ActionPick, Commit: "abc1234"},
+			action: Action{Action: ActionPick, Commit: "abc1234"},
 		},
 		{
 			name:   "valid squash with message",
-			action: RebaseAction{Action: ActionSquash, Commit: "abc1234", Message: "msg"},
+			action: Action{Action: ActionSquash, Commit: "abc1234", Message: "msg"},
 		},
 		{
 			name:   "valid exec",
-			action: RebaseAction{Action: ActionExec, Command: "make test"},
+			action: Action{Action: ActionExec, Command: "make test"},
 		},
 		{
 			name:    "exec without command",
-			action:  RebaseAction{Action: ActionExec},
+			action:  Action{Action: ActionExec},
 			wantErr: "exec action requires a command",
 		},
 		{
 			name:    "pick without commit",
-			action:  RebaseAction{Action: ActionPick},
+			action:  Action{Action: ActionPick},
 			wantErr: "pick action requires a commit hash",
 		},
 		{
 			name:    "invalid action type",
-			action:  RebaseAction{Action: ActionType("bogus"), Commit: "abc"},
+			action:  Action{Action: ActionType("bogus"), Commit: "abc"},
 			wantErr: "invalid action type",
 		},
 	}
@@ -98,47 +98,47 @@ func TestRebaseAction_Validate(t *testing.T) {
 	}
 }
 
-func TestRebaseSpec_Validate(t *testing.T) {
+func TestSpec_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
-		spec    RebaseSpec
+		spec    Spec
 		wantErr string
 	}{
 		{
 			name: "valid single action",
-			spec: RebaseSpec{Actions: []RebaseAction{
+			spec: Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 			}},
 		},
 		{
 			name: "valid multiple actions",
-			spec: RebaseSpec{Actions: []RebaseAction{
+			spec: Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionSquash, Commit: "def5678"},
 			}},
 		},
 		{
 			name:    "empty actions",
-			spec:    RebaseSpec{Actions: []RebaseAction{}},
+			spec:    Spec{Actions: []Action{}},
 			wantErr: "no actions",
 		},
 		{
 			name: "squash as first action",
-			spec: RebaseSpec{Actions: []RebaseAction{
+			spec: Spec{Actions: []Action{
 				{Action: ActionSquash, Commit: "abc1234"},
 			}},
 			wantErr: "cannot start with squash",
 		},
 		{
 			name: "fixup as first action",
-			spec: RebaseSpec{Actions: []RebaseAction{
+			spec: Spec{Actions: []Action{
 				{Action: ActionFixup, Commit: "abc1234"},
 			}},
 			wantErr: "cannot start with fixup",
 		},
 		{
 			name: "invalid action in list",
-			spec: RebaseSpec{Actions: []RebaseAction{
+			spec: Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionType("bogus"), Commit: "def"},
 			}},
@@ -162,13 +162,13 @@ func TestParseSpec(t *testing.T) {
 	tests := []struct {
 		name    string
 		json    string
-		want    *RebaseSpec
+		want    *Spec
 		wantErr string
 	}{
 		{
 			name: "simple pick list",
 			json: `{"actions":[{"action":"pick","commit":"abc1234"}]}`,
-			want: &RebaseSpec{Actions: []RebaseAction{
+			want: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 			}},
 		},
@@ -180,7 +180,7 @@ func TestParseSpec(t *testing.T) {
 					{"action": "squash", "commit": "def5678", "message": "Combined"}
 				]
 			}`,
-			want: &RebaseSpec{Actions: []RebaseAction{
+			want: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionSquash, Commit: "def5678", Message: "Combined"},
 			}},
@@ -193,7 +193,7 @@ func TestParseSpec(t *testing.T) {
 					{"action": "exec", "command": "make test"}
 				]
 			}`,
-			want: &RebaseSpec{Actions: []RebaseAction{
+			want: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionExec, Command: "make test"},
 			}},
@@ -229,13 +229,13 @@ func TestParseCLISpec(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    []string
-		want    *RebaseSpec
+		want    *Spec
 		wantErr string
 	}{
 		{
 			name: "simple commit list",
 			args: []string{"abc1234,def5678"},
-			want: &RebaseSpec{Actions: []RebaseAction{
+			want: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionPick, Commit: "def5678"},
 			}},
@@ -243,7 +243,7 @@ func TestParseCLISpec(t *testing.T) {
 		{
 			name: "multiple args",
 			args: []string{"abc1234", "def5678"},
-			want: &RebaseSpec{Actions: []RebaseAction{
+			want: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionPick, Commit: "def5678"},
 			}},
@@ -251,7 +251,7 @@ func TestParseCLISpec(t *testing.T) {
 		{
 			name: "explicit actions",
 			args: []string{"pick:abc1234,squash:def5678,drop:ghi9012"},
-			want: &RebaseSpec{Actions: []RebaseAction{
+			want: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionSquash, Commit: "def5678"},
 				{Action: ActionDrop, Commit: "ghi9012"},
@@ -260,14 +260,14 @@ func TestParseCLISpec(t *testing.T) {
 		{
 			name: "reword with message",
 			args: []string{"reword:abc1234:Better commit message"},
-			want: &RebaseSpec{Actions: []RebaseAction{
+			want: &Spec{Actions: []Action{
 				{Action: ActionReword, Commit: "abc1234", Message: "Better commit message"},
 			}},
 		},
 		{
 			name: "exec command",
 			args: []string{"pick:abc1234,exec:make test"},
-			want: &RebaseSpec{Actions: []RebaseAction{
+			want: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionExec, Command: "make test"},
 			}},
@@ -275,7 +275,7 @@ func TestParseCLISpec(t *testing.T) {
 		{
 			name: "mixed actions and commits",
 			args: []string{"abc1234,squash:def5678"},
-			want: &RebaseSpec{Actions: []RebaseAction{
+			want: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionSquash, Commit: "def5678"},
 			}},
@@ -320,14 +320,14 @@ func TestIsCommitHash(t *testing.T) {
 		{"abc1234", true},
 		{"ABC1234", true},
 		{"abcdef1234567890abcdef1234567890abcdef12", true},
-		{"abc", false},       // Too short.
-		{"abc12", false},     // Too short.
-		{"abc123", false},    // Too short (6 chars).
-		{"abcdefg", false},   // Contains non-hex.
-		{"abc-123", false},   // Contains dash.
-		{"", false},          // Empty.
-		{"pick", false},      // Not hex.
-		{"squash", false},    // Not hex.
+		{"abc", false},     // Too short.
+		{"abc12", false},   // Too short.
+		{"abc123", false},  // Too short (6 chars).
+		{"abcdefg", false}, // Contains non-hex.
+		{"abc-123", false}, // Contains dash.
+		{"", false},        // Empty.
+		{"pick", false},    // Not hex.
+		{"squash", false},  // Not hex.
 		{"abcdef1234567890abcdef1234567890abcdef123", false}, // 41 chars.
 	}
 
@@ -339,8 +339,8 @@ func TestIsCommitHash(t *testing.T) {
 }
 
 func TestParseSpecRoundTrip(t *testing.T) {
-	original := &RebaseSpec{
-		Actions: []RebaseAction{
+	original := &Spec{
+		Actions: []Action{
 			{Action: ActionPick, Commit: "abc1234"},
 			{Action: ActionSquash, Commit: "def5678", Message: "Combined"},
 			{Action: ActionReword, Commit: "ghi9012", Message: "Better message"},

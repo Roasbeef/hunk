@@ -16,7 +16,7 @@ func newApplyRebaseSpecCmd() *cobra.Command {
 		Hidden: true,
 		Short:  "Internal command to apply rebase spec (invoked by git)",
 		Args:   cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			specFile := args[0]
 			todoFile := args[1]
 

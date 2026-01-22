@@ -12,16 +12,16 @@ import (
 
 // rebaseStatusOutput is the JSON output for rebase status.
 type rebaseStatusOutput struct {
-	InProgress       bool                   `json:"in_progress"`
-	State            string                 `json:"state"`
-	CurrentAction    string                 `json:"current_action,omitempty"`
-	TotalCommits     int                    `json:"total_commits,omitempty"`
-	RemainingCommits int                    `json:"remaining_commits,omitempty"`
-	CompletedCommits int                    `json:"completed_commits,omitempty"`
-	Conflicts        []conflictInfoOutput   `json:"conflicts,omitempty"`
-	OriginalBranch   string                 `json:"original_branch,omitempty"`
-	OntoRef          string                 `json:"onto_ref,omitempty"`
-	Instructions     []string               `json:"instructions,omitempty"`
+	InProgress       bool                 `json:"in_progress"`
+	State            string               `json:"state"`
+	CurrentAction    string               `json:"current_action,omitempty"`
+	TotalCommits     int                  `json:"total_commits,omitempty"`
+	RemainingCommits int                  `json:"remaining_commits,omitempty"`
+	CompletedCommits int                  `json:"completed_commits,omitempty"`
+	Conflicts        []conflictInfoOutput `json:"conflicts,omitempty"`
+	OriginalBranch   string               `json:"original_branch,omitempty"`
+	OntoRef          string               `json:"onto_ref,omitempty"`
+	Instructions     []string             `json:"instructions,omitempty"`
 }
 
 // conflictInfoOutput is the JSON output for conflict info.
@@ -48,7 +48,7 @@ Use --json for machine-readable output.`,
 
   # JSON output for agents
   hunk rebase status --json`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRebaseStatus(cmd.Context(), cmd.OutOrStdout())
 		},
 	}

@@ -91,15 +91,15 @@ d mno7890 Fifth
 	}
 }
 
-func TestRebaseSpec_ToTodoFile(t *testing.T) {
+func TestSpec_ToTodoFile(t *testing.T) {
 	tests := []struct {
 		name string
-		spec *RebaseSpec
+		spec *Spec
 		want string
 	}{
 		{
 			name: "simple picks",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionPick, Commit: "def5678"},
 			}},
@@ -107,7 +107,7 @@ func TestRebaseSpec_ToTodoFile(t *testing.T) {
 		},
 		{
 			name: "various actions",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionSquash, Commit: "def5678"},
 				{Action: ActionDrop, Commit: "ghi9012"},
@@ -116,7 +116,7 @@ func TestRebaseSpec_ToTodoFile(t *testing.T) {
 		},
 		{
 			name: "with exec",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionExec, Command: "make test"},
 				{Action: ActionPick, Commit: "def5678"},
@@ -142,33 +142,33 @@ func TestValidateAgainstCommits(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		spec    *RebaseSpec
+		spec    *Spec
 		wantErr string
 	}{
 		{
 			name: "valid - full hashes",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234def5678"},
 				{Action: ActionSquash, Commit: "111222333444555"},
 			}},
 		},
 		{
 			name: "valid - short hashes",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionSquash, Commit: "1112223"},
 			}},
 		},
 		{
 			name: "valid - with exec",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionExec, Command: "make test"},
 			}},
 		},
 		{
 			name: "invalid commit",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "nonexistent"},
 			}},
 			wantErr: "not found in rebase range",
@@ -196,13 +196,13 @@ func TestReorderToMatchSpec(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		spec    *RebaseSpec
+		spec    *Spec
 		want    []TodoEntry
 		wantErr string
 	}{
 		{
 			name: "reverse order",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "ghi9012"},
 				{Action: ActionPick, Commit: "def5678"},
 				{Action: ActionPick, Commit: "abc1234"},
@@ -215,7 +215,7 @@ func TestReorderToMatchSpec(t *testing.T) {
 		},
 		{
 			name: "change actions",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionSquash, Commit: "def5678"},
 				{Action: ActionDrop, Commit: "ghi9012"},
@@ -228,7 +228,7 @@ func TestReorderToMatchSpec(t *testing.T) {
 		},
 		{
 			name: "with exec",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "abc1234"},
 				{Action: ActionExec, Command: "make test"},
 				{Action: ActionPick, Commit: "def5678"},
@@ -241,7 +241,7 @@ func TestReorderToMatchSpec(t *testing.T) {
 		},
 		{
 			name: "unknown commit",
-			spec: &RebaseSpec{Actions: []RebaseAction{
+			spec: &Spec{Actions: []Action{
 				{Action: ActionPick, Commit: "unknown"},
 			}},
 			wantErr: "not found",

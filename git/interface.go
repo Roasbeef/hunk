@@ -9,6 +9,8 @@ import (
 )
 
 // Executor abstracts git operations for testability.
+//
+//nolint:interfacebloat // This interface represents a cohesive set of git operations.
 type Executor interface {
 	// Diff returns the unified diff for unstaged changes.
 	// If paths is non-empty, limits to those paths.

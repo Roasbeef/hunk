@@ -44,7 +44,7 @@ func buildHunkBinary(t *testing.T) string {
 			cmd.Dir = "."
 
 			// Go up directories to find the project root.
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				if _, err := os.Stat(filepath.Join(cmd.Dir, "cmd/hunk/main.go")); err == nil {
 					break
 				}

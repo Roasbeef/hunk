@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -164,7 +165,6 @@ func (e *ShellExecutor) gitDir(ctx context.Context) (string, error) {
 func (e *ShellExecutor) RebaseList(
 	ctx context.Context, base string,
 ) ([]CommitInfo, error) {
-
 	// Use git log to list commits from base..HEAD.
 	// Format: hash|short_hash|subject|author|date
 	format := "%H|%h|%s|%an <%ae>|%aI"
@@ -207,7 +207,6 @@ func (e *ShellExecutor) RebaseList(
 func (e *ShellExecutor) RebaseStart(
 	ctx context.Context, base, editor string,
 ) error {
-
 	cmd := exec.CommandContext(
 		ctx, "git", "rebase", "-i", base,
 	)
@@ -232,7 +231,8 @@ func (e *ShellExecutor) RebaseStart(
 	err := cmd.Run()
 	if err != nil {
 		// Check if rebase is paused due to conflict (exit code 1).
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			if exitErr.ExitCode() == 1 {
 				// Rebase paused, not an error.
 				return nil

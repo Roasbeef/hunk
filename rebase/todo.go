@@ -95,7 +95,7 @@ func expandShortAction(s string) ActionType {
 
 // ToTodoFile generates a git rebase todo file from the spec.
 // The output format matches what git expects.
-func (s *RebaseSpec) ToTodoFile() string {
+func (s *Spec) ToTodoFile() string {
 	var sb strings.Builder
 
 	for _, action := range s.Actions {
@@ -114,7 +114,7 @@ func (s *RebaseSpec) ToTodoFile() string {
 // ToTodoFileWithMessages generates a todo file with message handling.
 // For reword actions with messages, it uses fixup -C to set the message.
 // This is a more advanced format for message control.
-func (s *RebaseSpec) ToTodoFileWithMessages() string {
+func (s *Spec) ToTodoFileWithMessages() string {
 	var sb strings.Builder
 
 	for _, action := range s.Actions {
@@ -133,7 +133,7 @@ func (s *RebaseSpec) ToTodoFileWithMessages() string {
 
 // ValidateAgainstCommits checks that the spec actions reference valid commits
 // from the original todo file.
-func (s *RebaseSpec) ValidateAgainstCommits(original []TodoEntry) error {
+func (s *Spec) ValidateAgainstCommits(original []TodoEntry) error {
 	// Build a set of valid commits from the original.
 	validCommits := make(map[string]bool)
 
@@ -177,7 +177,7 @@ func (s *RebaseSpec) ValidateAgainstCommits(original []TodoEntry) error {
 
 // ReorderToMatchSpec reorders the original todo entries to match the spec.
 // This preserves full commit hashes and subjects from the original.
-func ReorderToMatchSpec(spec *RebaseSpec, original []TodoEntry) ([]TodoEntry, error) {
+func ReorderToMatchSpec(spec *Spec, original []TodoEntry) ([]TodoEntry, error) {
 	// Build a map of commits to original entries.
 	commitMap := make(map[string]TodoEntry)
 

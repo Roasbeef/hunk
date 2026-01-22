@@ -54,8 +54,8 @@ func (a ActionType) ShortForm() string {
 	}
 }
 
-// RebaseAction represents a single rebase operation.
-type RebaseAction struct {
+// Action represents a single rebase operation.
+type Action struct {
 	// Action is the type of operation (pick, squash, drop, etc.).
 	Action ActionType `json:"action"`
 
@@ -71,7 +71,7 @@ type RebaseAction struct {
 }
 
 // Validate checks that the action is valid.
-func (a *RebaseAction) Validate() error {
+func (a *Action) Validate() error {
 	if !a.Action.Valid() {
 		return fmt.Errorf("invalid action type: %q", a.Action)
 	}
@@ -99,14 +99,14 @@ func (a *RebaseAction) Validate() error {
 	return nil
 }
 
-// RebaseSpec is a complete rebase specification.
-type RebaseSpec struct {
+// Spec is a complete rebase specification.
+type Spec struct {
 	// Actions is the ordered list of rebase operations.
-	Actions []RebaseAction `json:"actions"`
+	Actions []Action `json:"actions"`
 }
 
 // Validate checks that the spec is valid.
-func (s *RebaseSpec) Validate() error {
+func (s *Spec) Validate() error {
 	if len(s.Actions) == 0 {
 		return fmt.Errorf("rebase spec has no actions")
 	}
@@ -131,9 +131,9 @@ func (s *RebaseSpec) Validate() error {
 	return nil
 }
 
-// ParseSpec parses a RebaseSpec from JSON data.
-func ParseSpec(data []byte) (*RebaseSpec, error) {
-	var spec RebaseSpec
+// ParseSpec parses a Spec from JSON data.
+func ParseSpec(data []byte) (*Spec, error) {
+	var spec Spec
 
 	if err := json.Unmarshal(data, &spec); err != nil {
 		// Include a snippet of the invalid JSON for debugging.
@@ -161,12 +161,12 @@ func ParseSpec(data []byte) (*RebaseSpec, error) {
 //   - "pick:abc123,squash:def456" - explicit actions
 //   - "reword:abc123:New message" - action with message
 //   - "exec:make test" - exec command
-func ParseCLISpec(args []string) (*RebaseSpec, error) {
+func ParseCLISpec(args []string) (*Spec, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("no rebase actions specified")
 	}
 
-	var actions []RebaseAction
+	var actions []Action
 
 	// Join all args and split by comma.
 	combined := strings.Join(args, ",")
@@ -186,7 +186,7 @@ func ParseCLISpec(args []string) (*RebaseSpec, error) {
 		actions = append(actions, action)
 	}
 
-	spec := &RebaseSpec{Actions: actions}
+	spec := &Spec{Actions: actions}
 
 	if err := spec.Validate(); err != nil {
 		return nil, err
@@ -197,38 +197,37 @@ func ParseCLISpec(args []string) (*RebaseSpec, error) {
 
 // parseActionSpec parses a single action specification.
 // Formats: "abc123", "pick:abc123", "reword:abc123:Message", "exec:command".
-func parseActionSpec(s string) (RebaseAction, error) {
+func parseActionSpec(s string) (Action, error) {
 	// Check if it's just a commit hash (no colon, or colon only at position 1
 	// for Windows paths).
 	if !strings.Contains(s, ":") || isCommitHash(s) {
-		return RebaseAction{
+		return Action{
 			Action: ActionPick,
 			Commit: s,
 		}, nil
 	}
 
 	// Split by first colon to get action.
-	colonIdx := strings.Index(s, ":")
-	actionStr := strings.ToLower(s[:colonIdx])
-	rest := s[colonIdx+1:]
+	actionStr, rest, _ := strings.Cut(s, ":")
+	actionStr = strings.ToLower(actionStr)
 
 	action := ActionType(actionStr)
 	if !action.Valid() {
 		// Maybe it's just a commit hash that contains colon-like pattern.
 		// Try treating whole thing as commit.
 		if isCommitHash(s) {
-			return RebaseAction{
+			return Action{
 				Action: ActionPick,
 				Commit: s,
 			}, nil
 		}
 
-		return RebaseAction{}, fmt.Errorf("unknown action: %q", actionStr)
+		return Action{}, fmt.Errorf("unknown action: %q", actionStr)
 	}
 
 	// Handle exec specially - rest is the command.
 	if action == ActionExec {
-		return RebaseAction{
+		return Action{
 			Action:  ActionExec,
 			Command: rest,
 		}, nil
@@ -238,14 +237,14 @@ func parseActionSpec(s string) (RebaseAction, error) {
 	if strings.Contains(rest, ":") {
 		// Format: action:commit:message.
 		parts := strings.SplitN(rest, ":", 2)
-		return RebaseAction{
+		return Action{
 			Action:  action,
 			Commit:  strings.TrimSpace(parts[0]),
 			Message: strings.TrimSpace(parts[1]),
 		}, nil
 	}
 
-	return RebaseAction{
+	return Action{
 		Action: action,
 		Commit: strings.TrimSpace(rest),
 	}, nil
@@ -259,8 +258,10 @@ func isCommitHash(s string) bool {
 	}
 
 	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-			(c >= 'A' && c <= 'F')) {
+		isDigit := c >= '0' && c <= '9'
+		isLowerHex := c >= 'a' && c <= 'f'
+		isUpperHex := c >= 'A' && c <= 'F'
+		if !isDigit && !isLowerHex && !isUpperHex {
 			return false
 		}
 	}

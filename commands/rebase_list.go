@@ -49,7 +49,7 @@ Use --json for machine-readable output.`,
 
   # List relative to a specific commit
   hunk rebase list --onto HEAD~5`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if onto == "" {
 				return fmt.Errorf("--onto is required")
 			}
@@ -59,7 +59,7 @@ Use --json for machine-readable output.`,
 	}
 
 	cmd.Flags().StringVar(&onto, "onto", "", "base reference to rebase onto (required)")
-	cmd.MarkFlagRequired("onto")
+	_ = cmd.MarkFlagRequired("onto")
 
 	return cmd
 }

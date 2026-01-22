@@ -10,6 +10,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Rebase control action constants.
+const (
+	rebaseActionContinue = "continue"
+	rebaseActionAbort    = "abort"
+	rebaseActionSkip     = "skip"
+)
+
 // rebaseControlOutput is the JSON output for rebase control commands.
 type rebaseControlOutput struct {
 	Success    bool   `json:"success"`
@@ -32,9 +39,9 @@ If there are still unresolved conflicts, this command will fail.`,
 		Example: `  # After resolving conflicts
   git add resolved-file.go
   hunk rebase continue`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRebaseControl(
-				cmd.Context(), cmd.OutOrStdout(), "continue",
+				cmd.Context(), cmd.OutOrStdout(), rebaseActionContinue,
 			)
 		},
 	}
@@ -51,9 +58,9 @@ This will discard all progress made during the rebase and return
 the branch to its original state before the rebase started.`,
 		Example: `  # Abort the current rebase
   hunk rebase abort`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRebaseControl(
-				cmd.Context(), cmd.OutOrStdout(), "abort",
+				cmd.Context(), cmd.OutOrStdout(), rebaseActionAbort,
 			)
 		},
 	}
@@ -70,9 +77,9 @@ Use this when a commit cannot be applied cleanly and you want
 to drop it from the rebased history rather than resolving conflicts.`,
 		Example: `  # Skip the problematic commit
   hunk rebase skip`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRebaseControl(
-				cmd.Context(), cmd.OutOrStdout(), "skip",
+				cmd.Context(), cmd.OutOrStdout(), rebaseActionSkip,
 			)
 		},
 	}
@@ -94,11 +101,11 @@ func runRebaseControl(ctx context.Context, w io.Writer, action string) error {
 
 	// Perform the action.
 	switch action {
-	case "continue":
+	case rebaseActionContinue:
 		err = executor.RebaseContinue(ctx)
-	case "abort":
+	case rebaseActionAbort:
 		err = executor.RebaseAbort(ctx)
-	case "skip":
+	case rebaseActionSkip:
 		err = executor.RebaseSkip(ctx)
 	default:
 		return fmt.Errorf("unknown action: %s", action)
@@ -124,14 +131,13 @@ func runRebaseControl(ctx context.Context, w io.Writer, action string) error {
 func formatRebaseControlJSON(
 	w io.Writer, action string, state *git.RebaseState,
 ) error {
-
 	output := rebaseControlOutput{
 		Success:    true,
 		InProgress: state.InProgress,
 	}
 
 	switch action {
-	case "continue":
+	case rebaseActionContinue:
 		if state.InProgress {
 			output.Message = fmt.Sprintf(
 				"Continued. %d commits remaining.",
@@ -140,9 +146,9 @@ func formatRebaseControlJSON(
 		} else {
 			output.Message = "Rebase completed successfully."
 		}
-	case "abort":
+	case rebaseActionAbort:
 		output.Message = "Rebase aborted. Branch restored to original state."
-	case "skip":
+	case rebaseActionSkip:
 		if state.InProgress {
 			output.Message = fmt.Sprintf(
 				"Skipped commit. %d commits remaining.",
@@ -162,18 +168,17 @@ func formatRebaseControlJSON(
 func formatRebaseControlText(
 	w io.Writer, action string, state *git.RebaseState,
 ) error {
-
 	switch action {
-	case "continue":
+	case rebaseActionContinue:
 		if state.InProgress {
 			fmt.Fprintf(w, "Continued. %d commits remaining.\n",
 				state.RemainingCount)
 		} else {
 			fmt.Fprintln(w, "Rebase completed successfully.")
 		}
-	case "abort":
+	case rebaseActionAbort:
 		fmt.Fprintln(w, "Rebase aborted. Branch restored to original state.")
-	case "skip":
+	case rebaseActionSkip:
 		if state.InProgress {
 			fmt.Fprintf(w, "Skipped commit. %d commits remaining.\n",
 				state.RemainingCount)

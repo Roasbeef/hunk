@@ -94,7 +94,7 @@ JSON Syntax (with --spec):
 		"JSON file containing rebase specification (use - for stdin)",
 	)
 
-	cmd.MarkFlagRequired("onto")
+	_ = cmd.MarkFlagRequired("onto")
 
 	return cmd
 }
@@ -103,7 +103,6 @@ func runRebaseRun(
 	ctx context.Context, w io.Writer,
 	onto, specFile string, args []string,
 ) error {
-
 	cfg := getConfig(ctx)
 
 	// Parse the spec from file or CLI args.
@@ -179,7 +178,7 @@ func runRebaseRun(
 	return formatRebaseRunText(w, state)
 }
 
-func parseRebaseSpec(specFile string, args []string) (*rebase.RebaseSpec, error) {
+func parseRebaseSpec(specFile string, args []string) (*rebase.Spec, error) {
 	// If spec file provided, use that.
 	if specFile != "" {
 		var data []byte
