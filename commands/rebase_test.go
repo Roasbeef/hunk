@@ -636,3 +636,156 @@ func TestRebaseRunLongMessage(t *testing.T) {
 	require.Contains(t, fullMessage, longMessage[:50])
 	require.Contains(t, fullMessage, longMessage[450:])
 }
+
+func TestRebaseAutosquashBasic(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with commits and a fixup.
+	repo.CreateBranch("feature")
+
+	repo.WriteFile("feature.txt", "feature content\n")
+	repo.CommitAll("Add feature")
+
+	repo.WriteFile("other.txt", "other content\n")
+	repo.CommitAll("Add other file")
+
+	// Create a fixup commit targeting "Add feature".
+	repo.WriteFile("feature.txt", "feature content updated\n")
+	repo.Git("add", "-A")
+	repo.Git("commit", "-m", "fixup! Add feature")
+
+	initialCount := repo.GetCommitCount()
+
+	// Run autosquash.
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "autosquash", "--onto", "main",
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "1 fixup(s) squashed")
+
+	// Should have one fewer commit (fixup was squashed).
+	finalCount := repo.GetCommitCount()
+	require.Equal(t, initialCount-1, finalCount)
+
+	// Both files should exist with updated content.
+	require.True(t, repo.FileExists("feature.txt"))
+	require.True(t, repo.FileExists("other.txt"))
+	require.Equal(t, "feature content updated\n", repo.ReadFile("feature.txt"))
+}
+
+func TestRebaseAutosquashNoFixups(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with regular commits (no fixups).
+	repo.CreateBranch("feature")
+
+	repo.WriteFile("a.txt", "a content\n")
+	repo.CommitAll("Add file a")
+
+	repo.WriteFile("b.txt", "b content\n")
+	repo.CommitAll("Add file b")
+
+	initialCount := repo.GetCommitCount()
+
+	// Run autosquash - should report nothing to do.
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "autosquash", "--onto", "main",
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "No fixup/squash commits found")
+
+	// Commit count should be unchanged.
+	finalCount := repo.GetCommitCount()
+	require.Equal(t, initialCount, finalCount)
+}
+
+func TestRebaseAutosquashDryRun(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with a fixup.
+	repo.CreateBranch("feature")
+
+	repo.WriteFile("feature.txt", "feature content\n")
+	repo.CommitAll("Add feature")
+
+	repo.WriteFile("feature.txt", "feature updated\n")
+	repo.Git("add", "-A")
+	repo.Git("commit", "-m", "fixup! Add feature")
+
+	initialCount := repo.GetCommitCount()
+
+	// Run autosquash with --dry-run.
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "autosquash", "--onto", "main", "--dry-run",
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "Dry run")
+	require.Contains(t, output, "1 fixup")
+
+	// Commit count should be unchanged (dry run).
+	finalCount := repo.GetCommitCount()
+	require.Equal(t, initialCount, finalCount)
+
+	// Original content should still be there (not updated).
+	require.Equal(t, "feature updated\n", repo.ReadFile("feature.txt"))
+}
+
+func TestRebaseAutosquashMultipleFixups(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with multiple fixups.
+	repo.CreateBranch("feature")
+
+	repo.WriteFile("a.txt", "a content\n")
+	repo.CommitAll("Add file a")
+
+	repo.WriteFile("b.txt", "b content\n")
+	repo.CommitAll("Add file b")
+
+	// Fixup for "Add file a".
+	repo.WriteFile("a.txt", "a updated\n")
+	repo.Git("add", "-A")
+	repo.Git("commit", "-m", "fixup! Add file a")
+
+	// Fixup for "Add file b".
+	repo.WriteFile("b.txt", "b updated\n")
+	repo.Git("add", "-A")
+	repo.Git("commit", "-m", "fixup! Add file b")
+
+	initialCount := repo.GetCommitCount()
+
+	// Run autosquash.
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "autosquash", "--onto", "main",
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "2 fixup(s) squashed")
+
+	// Should have two fewer commits.
+	finalCount := repo.GetCommitCount()
+	require.Equal(t, initialCount-2, finalCount)
+
+	// Files should have updated content.
+	require.Equal(t, "a updated\n", repo.ReadFile("a.txt"))
+	require.Equal(t, "b updated\n", repo.ReadFile("b.txt"))
+}
