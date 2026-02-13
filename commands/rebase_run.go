@@ -14,6 +14,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// osWindows is the runtime.GOOS value for Windows, extracted to satisfy
+// goconst across the package.
+const osWindows = "windows"
+
 // rebaseRunOutput is the JSON output for rebase run.
 type rebaseRunOutput struct {
 	Success     bool   `json:"success"`
@@ -236,7 +240,7 @@ func formatRebaseRunJSON(w io.Writer, state *git.RebaseState) error {
 // On Windows, git uses MSYS bash which requires forward slashes and proper
 // quoting for paths containing spaces.
 func formatEditorCommand(hunkPath, specPath string) string {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == osWindows {
 		// Convert backslashes to forward slashes for MSYS bash.
 		hunkPath = strings.ReplaceAll(hunkPath, "\\", "/")
 		specPath = strings.ReplaceAll(specPath, "\\", "/")
