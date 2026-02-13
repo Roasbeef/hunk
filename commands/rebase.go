@@ -42,6 +42,7 @@ Examples:
 	cmd.AddCommand(NewRebaseContinueCmd())
 	cmd.AddCommand(NewRebaseAbortCmd())
 	cmd.AddCommand(NewRebaseSkipCmd())
+	cmd.AddCommand(NewRebaseAutosquashCmd())
 	cmd.AddCommand(newApplyRebaseSpecCmd())
 
 	return cmd
