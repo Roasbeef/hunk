@@ -402,6 +402,123 @@ func TestGenerate_NonContiguousSelections(t *testing.T) {
 				require.NotContains(t, s, "+// 8 skip.")
 			},
 		},
+		{
+			// Replacement group: deletions followed by additions
+			// form one atomic unit. Selecting only the addition
+			// (by new line number) must also include all deletions
+			// to produce a valid patch.
+			name: "mixed replacement group is atomic when addition selected",
+			diffText: `--- a/main.go
++++ b/main.go
+@@ -1,6 +1,4 @@
+ package main
+-// old1.
+-// old2.
+-// old3.
++// new1.
++// new2.
+ func main() {}
+`,
+			// Select only new line 2 (first addition). The three
+			// deletions at old lines 2-4 must also be included
+			// because the group is a mixed replacement.
+			selections: []string{"main.go:2"},
+			wantHunks:  1,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "-// old1.")
+				require.Contains(t, s, "-// old2.")
+				require.Contains(t, s, "-// old3.")
+				require.Contains(t, s, "+// new1.")
+				require.Contains(t, s, "+// new2.")
+			},
+		},
+		{
+			// When a deletion in a mixed group is selected (by
+			// old line number), all additions in the group must
+			// also be included.
+			name: "mixed replacement group is atomic when deletion selected",
+			diffText: `--- a/main.go
++++ b/main.go
+@@ -1,5 +1,4 @@
+ package main
+-// old1.
+-// old2.
++// new1.
++// new2.
+ func main() {}
+`,
+			// Select only old line 2 (first deletion).
+			selections: []string{"main.go:2"},
+			wantHunks:  1,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "-// old1.")
+				require.Contains(t, s, "-// old2.")
+				require.Contains(t, s, "+// new1.")
+				require.Contains(t, s, "+// new2.")
+			},
+		},
+		{
+			// Pure-addition groups are NOT atomic. Individual
+			// lines can still be selected independently.
+			name: "pure addition group allows individual selection",
+			diffText: `--- a/main.go
++++ b/main.go
+@@ -1,2 +1,5 @@
+ package main
++// line A.
++// line B.
++// line C.
+ func main() {}
+`,
+			// Select only new line 3 (middle addition).
+			selections: []string{"main.go:3"},
+			wantHunks:  1,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "+// line B.")
+				require.NotContains(t, s, "+// line A.")
+				require.NotContains(t, s, "+// line C.")
+			},
+		},
+		{
+			// When a range boundary splits a mixed replacement
+			// group, the entire group is included. This is the
+			// exact scenario that caused "patch does not apply"
+			// errors: range 1-4 covers deletions at old lines
+			// 2-4 but not old line 5, yet line 5 is part of the
+			// same replacement group.
+			name: "range boundary splitting mixed group includes full group",
+			diffText: `--- a/main.go
++++ b/main.go
+@@ -1,8 +1,5 @@
+ package main
+-// remove1.
+-// remove2.
+-// remove3.
+-// remove4.
++// added1.
++// added2.
+ func main() {}
+ // end.
+`,
+			// Range 1-4 covers old lines 2-4 (3 of 4 deletions)
+			// plus new lines 2-4 (both additions). Old line 5
+			// (the 4th deletion) is outside the range but must
+			// be included because it's in the same mixed group.
+			selections: []string{"main.go:1-4"},
+			wantHunks:  1,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "-// remove1.")
+				require.Contains(t, s, "-// remove2.")
+				require.Contains(t, s, "-// remove3.")
+				require.Contains(t, s, "-// remove4.")
+				require.Contains(t, s, "+// added1.")
+				require.Contains(t, s, "+// added2.")
+			},
+		},
 	}
 
 	for _, tc := range tests {
