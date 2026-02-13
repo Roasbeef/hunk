@@ -104,7 +104,74 @@ func filterHunk(hunk *diff.Hunk, sel *diff.FileSelection) []*diff.Hunk {
 // findChangeBlocks identifies contiguous blocks of selected changes within a
 // hunk. Context lines do not break contiguity - only unselected change lines
 // create block boundaries.
+//
+// For mixed change groups (containing both additions and deletions), the
+// group is treated as atomic: if ANY line in the group is selected, ALL
+// lines are included. This prevents invalid patches where some deletions in
+// a replacement are removed but their partners are left in place. Pure-add
+// and pure-delete groups remain individually selectable since all their
+// lines use the same line number space (new or old respectively).
 func findChangeBlocks(hunk *diff.Hunk, sel *diff.FileSelection) []changeBlock {
+	// Build a selected-line set that expands mixed change groups.
+	// A mixed group is a contiguous run of change lines containing
+	// both additions and deletions. When any member is selected,
+	// all members are force-selected.
+	selected := make([]bool, len(hunk.Lines))
+
+	// First pass: mark individually selected lines and identify
+	// mixed change groups.
+	type groupSpan struct {
+		start, end  int  // Indices into hunk.Lines (end exclusive).
+		hasAdd      bool // Group contains at least one addition.
+		hasDel      bool // Group contains at least one deletion.
+		anySelected bool // Group has at least one selected line.
+	}
+
+	var groups []groupSpan
+	var cur *groupSpan
+
+	for i, line := range hunk.Lines {
+		if !line.IsChange() {
+			if cur != nil {
+				groups = append(groups, *cur)
+				cur = nil
+			}
+			continue
+		}
+
+		if cur == nil {
+			cur = &groupSpan{start: i}
+		}
+		cur.end = i + 1
+
+		switch line.Op {
+		case diff.OpAdd:
+			cur.hasAdd = true
+		case diff.OpDelete:
+			cur.hasDel = true
+		}
+
+		lineNum := effectiveLineNum(line)
+		if sel.Contains(lineNum) {
+			selected[i] = true
+			cur.anySelected = true
+		}
+	}
+	if cur != nil {
+		groups = append(groups, *cur)
+	}
+
+	// Expand mixed groups: if a group has both adds and deletes and
+	// any member is selected, force-select all members.
+	for _, g := range groups {
+		if g.hasAdd && g.hasDel && g.anySelected {
+			for i := g.start; i < g.end; i++ {
+				selected[i] = true
+			}
+		}
+	}
+
+	// Second pass: build change blocks from the expanded selection.
 	var blocks []changeBlock
 	var currentBlock *changeBlock
 
@@ -114,24 +181,17 @@ func findChangeBlocks(hunk *diff.Hunk, sel *diff.FileSelection) []changeBlock {
 			continue
 		}
 
-		lineNum := effectiveLineNum(line)
-		isSelected := sel.Contains(lineNum)
-
-		if isSelected {
+		if selected[i] {
 			if currentBlock == nil {
-				// Start a new block.
 				currentBlock = &changeBlock{startIdx: i}
 			}
-			// Extend block to include this line.
 			currentBlock.endIdx = i + 1
 		} else if currentBlock != nil {
-			// Unselected change line breaks the current block.
 			blocks = append(blocks, *currentBlock)
 			currentBlock = nil
 		}
 	}
 
-	// Don't forget to close the final block.
 	if currentBlock != nil {
 		blocks = append(blocks, *currentBlock)
 	}

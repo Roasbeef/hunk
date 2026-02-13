@@ -35,7 +35,7 @@ func buildHunkBinary(t *testing.T) string {
 		}
 
 		binaryName := "hunk"
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == osWindows {
 			binaryName = "hunk.exe"
 		}
 

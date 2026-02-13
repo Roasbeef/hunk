@@ -233,7 +233,6 @@ func findTargetCommit(
 	// Check for nested fixups (fixup! fixup! ...).
 	if strings.HasPrefix(targetSubject, "fixup! ") ||
 		strings.HasPrefix(targetSubject, "squash! ") {
-
 		return findTargetCommit(targetSubject, "fixup! ", subjectToHash, commits)
 	}
 
@@ -350,7 +349,7 @@ func executeAutosquashRebase(
 }
 
 func formatAutosquashEditorCommand(hunkPath, specPath string) string {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == osWindows {
 		hunkPath = strings.ReplaceAll(hunkPath, "\\", "/")
 		specPath = strings.ReplaceAll(specPath, "\\", "/")
 
