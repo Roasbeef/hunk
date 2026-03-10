@@ -236,3 +236,23 @@ func (r *GitTestRepo) LogOneline() string {
 
 	return r.Git("log", "--oneline")
 }
+
+// GetCommitMessage returns the full commit message of HEAD.
+func (r *GitTestRepo) GetCommitMessage() string {
+	r.t.Helper()
+
+	return r.Git("log", "-1", "--format=%B")
+}
+
+// GetFullHash returns the full hash of HEAD.
+func (r *GitTestRepo) GetFullHash() string {
+	r.t.Helper()
+
+	out := r.Git("rev-parse", "HEAD")
+	// Remove trailing newline.
+	if len(out) > 0 && out[len(out)-1] == '\n' {
+		out = out[:len(out)-1]
+	}
+
+	return out
+}

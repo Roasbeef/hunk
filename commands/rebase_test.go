@@ -678,6 +678,308 @@ func TestRebaseAutosquashBasic(t *testing.T) {
 	require.Equal(t, "feature content updated\n", repo.ReadFile("feature.txt"))
 }
 
+// TestRebaseRunRewordWithMessage is a regression test for the reword-with-
+// message feature. Before the fix, hunk would set GIT_EDITOR=cat which caused
+// reword to silently keep the original message.
+func TestRebaseRunRewordWithMessage(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with 2 commits.
+	repo.CreateBranch("feature")
+
+	repo.WriteFile("a.txt", "a content\n")
+	repo.CommitAll("Original message for a")
+	hash1 := repo.GetShortHash()
+
+	repo.WriteFile("b.txt", "b content\n")
+	repo.CommitAll("Original message for b")
+	hash2 := repo.GetShortHash()
+
+	// Reword the first commit with a new single-line message.
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "run", "--onto", "main",
+		"reword:"+hash1+":Better message for a,pick:"+hash2,
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "completed successfully")
+
+	// Verify both files are preserved.
+	require.True(t, repo.FileExists("a.txt"))
+	require.True(t, repo.FileExists("b.txt"))
+
+	// Check the commit messages - the first one should be reworded.
+	log := repo.LogOneline()
+	require.Contains(t, log, "Better message for a")
+	require.Contains(t, log, "Original message for b")
+	require.NotContains(t, log, "Original message for a")
+}
+
+// TestRebaseRunRewordMultiLineMessage tests reword with a multi-line commit
+// message provided via JSON spec (since CLI syntax can't handle multi-line).
+func TestRebaseRunRewordMultiLineMessage(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with 1 commit.
+	repo.CreateBranch("feature")
+
+	repo.WriteFile("a.txt", "a content\n")
+	repo.CommitAll("Old title")
+	hash1 := repo.GetFullHash()
+
+	// Write a JSON spec with multi-line message.
+	specJSON := `{
+		"actions": [
+			{
+				"action": "reword",
+				"commit": "` + hash1 + `",
+				"message": "New title\n\nThis is the body.\nWith multiple lines."
+			}
+		]
+	}`
+
+	specFile := filepath.Join(repo.Dir, "spec.json")
+	err := os.WriteFile(specFile, []byte(specJSON), 0600)
+	require.NoError(t, err)
+
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "run", "--onto", "main",
+		"--spec", specFile,
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "completed successfully")
+
+	// Verify file is preserved.
+	require.True(t, repo.FileExists("a.txt"))
+
+	// Check the full commit message.
+	fullMsg := repo.GetCommitMessage()
+	require.Contains(t, fullMsg, "New title")
+	require.Contains(t, fullMsg, "This is the body.")
+	require.Contains(t, fullMsg, "With multiple lines.")
+	require.NotContains(t, fullMsg, "Old title")
+}
+
+// TestRebaseRunRewordMultipleCommits tests rewording multiple commits in a
+// single rebase operation.
+func TestRebaseRunRewordMultipleCommits(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with 3 commits.
+	repo.CreateBranch("feature")
+
+	repo.WriteFile("a.txt", "a content\n")
+	repo.CommitAll("Old message A")
+	hash1 := repo.GetFullHash()
+
+	repo.WriteFile("b.txt", "b content\n")
+	repo.CommitAll("Old message B")
+	hash2 := repo.GetFullHash()
+
+	repo.WriteFile("c.txt", "c content\n")
+	repo.CommitAll("Keep this message")
+	hash3 := repo.GetFullHash()
+
+	// Write a JSON spec rewording first two, picking third.
+	specJSON := `{
+		"actions": [
+			{"action": "reword", "commit": "` + hash1 + `", "message": "New message A"},
+			{"action": "reword", "commit": "` + hash2 + `", "message": "New message B"},
+			{"action": "pick", "commit": "` + hash3 + `"}
+		]
+	}`
+
+	specFile := filepath.Join(repo.Dir, "spec.json")
+	err := os.WriteFile(specFile, []byte(specJSON), 0600)
+	require.NoError(t, err)
+
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "run", "--onto", "main",
+		"--spec", specFile,
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "completed successfully")
+
+	// All files should be preserved.
+	require.True(t, repo.FileExists("a.txt"))
+	require.True(t, repo.FileExists("b.txt"))
+	require.True(t, repo.FileExists("c.txt"))
+
+	// Check all commit messages.
+	log := repo.LogOneline()
+	require.Contains(t, log, "New message A")
+	require.Contains(t, log, "New message B")
+	require.Contains(t, log, "Keep this message")
+	require.NotContains(t, log, "Old message A")
+	require.NotContains(t, log, "Old message B")
+}
+
+// TestRebaseRunRewordWithSingleQuotes tests that single quotes in commit
+// messages are properly escaped during reword.
+func TestRebaseRunRewordWithSingleQuotes(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with 1 commit.
+	repo.CreateBranch("feature")
+
+	repo.WriteFile("a.txt", "a content\n")
+	repo.CommitAll("Old message")
+	hash1 := repo.GetShortHash()
+
+	// Reword with a message containing a single quote.
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "run", "--onto", "main",
+		"reword:"+hash1+":fix: don't panic on nil input",
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "completed successfully")
+
+	// Check the commit message.
+	fullMsg := repo.GetCommitMessage()
+	require.Contains(t, fullMsg, "don't panic on nil input")
+}
+
+// TestRebaseRunRewordPreservesContent verifies that rewording a commit message
+// does not alter the commit's file content.
+func TestRebaseRunRewordPreservesContent(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with 1 commit that has specific content.
+	repo.CreateBranch("feature")
+
+	content := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n"
+	repo.WriteFile("main.go", content)
+	repo.CommitAll("Original message")
+	hash1 := repo.GetShortHash()
+
+	// Reword the commit.
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "run", "--onto", "main",
+		"reword:"+hash1+":Reworded message",
+	)
+	require.NoError(t, err, "output: %s", output)
+
+	// Verify file content is identical.
+	actual := repo.ReadFile("main.go")
+	require.Equal(t, content, actual)
+}
+
+// TestRebaseRunRewordWithPercentSign tests that percent signs in commit
+// messages are properly escaped (printf uses % as format specifier).
+func TestRebaseRunRewordWithPercentSign(t *testing.T) {
+	repo := testutil.NewGitTestRepo(t)
+
+	// Create base commit on main.
+	repo.WriteFile("base.txt", "base content\n")
+	repo.CommitAll("Base commit")
+
+	// Create feature branch with 1 commit.
+	repo.CreateBranch("feature")
+
+	repo.WriteFile("a.txt", "a content\n")
+	repo.CommitAll("Old message")
+	hash1 := repo.GetFullHash()
+
+	// Write a JSON spec with percent sign in message.
+	specJSON := `{
+		"actions": [
+			{
+				"action": "reword",
+				"commit": "` + hash1 + `",
+				"message": "bump test coverage to 100%"
+			}
+		]
+	}`
+
+	specFile := filepath.Join(repo.Dir, "spec.json")
+	err := os.WriteFile(specFile, []byte(specJSON), 0600)
+	require.NoError(t, err)
+
+	output, err := runHunkCommand(
+		t, repo.Dir,
+		"rebase", "run", "--onto", "main",
+		"--spec", specFile,
+	)
+	require.NoError(t, err, "output: %s", output)
+	require.Contains(t, output, "completed successfully")
+
+	// Check the commit message preserves the percent sign.
+	fullMsg := repo.GetCommitMessage()
+	require.Contains(t, fullMsg, "100%")
+}
+
+// TestRebaseRunRewordCLIvJSON verifies that CLI and JSON spec produce the
+// same result for a simple single-line reword.
+func TestRebaseRunRewordCLIvJSON(t *testing.T) {
+	newMsg := "Unified reword message"
+
+	// Setup function for ComparisonTest.
+	setup := func(r *testutil.GitTestRepo) {
+		r.WriteFile("base.txt", "base\n")
+		r.CommitAll("Base commit")
+		r.CreateBranch("feature")
+		r.WriteFile("a.txt", "content\n")
+		r.CommitAll("Old message")
+	}
+
+	ct := testutil.NewComparisonTest(t, setup)
+
+	// CLI approach on Expected.
+	hash1 := ct.Expected.GetShortHash()
+	output, err := runHunkCommand(
+		t, ct.Expected.Dir,
+		"rebase", "run", "--onto", "main",
+		"reword:"+hash1+":"+newMsg,
+	)
+	require.NoError(t, err, "CLI output: %s", output)
+
+	// JSON spec approach on Actual.
+	hash2 := ct.Actual.GetFullHash()
+	specJSON := `{"actions":[{"action":"reword","commit":"` + hash2 + `","message":"` + newMsg + `"}]}`
+	specFile := filepath.Join(ct.Actual.Dir, "spec.json")
+	err = os.WriteFile(specFile, []byte(specJSON), 0600)
+	require.NoError(t, err)
+
+	output, err = runHunkCommand(
+		t, ct.Actual.Dir,
+		"rebase", "run", "--onto", "main",
+		"--spec", specFile,
+	)
+	require.NoError(t, err, "JSON output: %s", output)
+
+	// Both should have the same commit message.
+	expMsg := ct.Expected.GetCommitMessage()
+	actMsg := ct.Actual.GetCommitMessage()
+	require.Equal(t, expMsg, actMsg)
+
+	// Both should have the same file content.
+	ct.AssertSameContent("a.txt")
+}
+
 func TestRebaseAutosquashNoFixups(t *testing.T) {
 	repo := testutil.NewGitTestRepo(t)
 
