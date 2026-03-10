@@ -223,11 +223,11 @@ func ReorderToMatchSpec(spec *Spec, original []TodoEntry) ([]TodoEntry, error) {
 			})
 
 			// Escape the message for use inside a printf format
-			// string in a single-line shell command. Replace
-			// actual newlines with \n, single quotes with '\'',
-			// and percent signs with %% to avoid printf
-			// interpolation.
+			// string in a single-line shell command. Order
+			// matters: backslash must be escaped first, before
+			// newlines are converted, to avoid double-escaping.
 			escaped := action.Message
+			escaped = strings.ReplaceAll(escaped, "\r", "")
 			escaped = strings.ReplaceAll(escaped, `\`, `\\`)
 			escaped = strings.ReplaceAll(escaped, "%", "%%")
 			escaped = strings.ReplaceAll(escaped, "'", `'\''`)

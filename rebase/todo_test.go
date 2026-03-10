@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
 )
 
 func TestParseTodoFile(t *testing.T) {
@@ -264,7 +265,7 @@ func TestReorderToMatchSpec(t *testing.T) {
 	}
 }
 
-func TestReorderToMatchSpec_RewordWithMessage(t *testing.T) {
+func TestReorderToMatchSpecRewordWithMessage(t *testing.T) {
 	original := []TodoEntry{
 		{Action: ActionPick, Commit: "abc1234", Subject: "First commit"},
 		{Action: ActionPick, Commit: "def5678", Subject: "Second commit"},
@@ -387,6 +388,76 @@ func TestReorderToMatchSpec_RewordWithMessage(t *testing.T) {
 				{Action: ActionPick, Commit: "ghi9012", Subject: "Third commit"},
 			},
 		},
+		{
+			name: "reword message with double quotes",
+			spec: &Spec{Actions: []Action{
+				{
+					Action:  ActionReword,
+					Commit:  "abc1234",
+					Message: `fix: handle "edge case" in parser`,
+				},
+			}},
+			want: []TodoEntry{
+				{Action: ActionPick, Commit: "abc1234", Subject: "First commit"},
+				{Action: ActionExec, Subject: `printf 'fix: handle "edge case" in parser' | git commit --amend -F -`},
+			},
+		},
+		{
+			name: "reword message with dollar sign and backtick",
+			spec: &Spec{Actions: []Action{
+				{
+					Action:  ActionReword,
+					Commit:  "abc1234",
+					Message: "fix: handle $HOME and `uname` safely",
+				},
+			}},
+			want: []TodoEntry{
+				{Action: ActionPick, Commit: "abc1234", Subject: "First commit"},
+				{Action: ActionExec, Subject: "printf 'fix: handle $HOME and `uname` safely' | git commit --amend -F -"},
+			},
+		},
+		{
+			name: "reword message with tab character",
+			spec: &Spec{Actions: []Action{
+				{
+					Action:  ActionReword,
+					Commit:  "abc1234",
+					Message: "fix:\tindented message",
+				},
+			}},
+			want: []TodoEntry{
+				{Action: ActionPick, Commit: "abc1234", Subject: "First commit"},
+				{Action: ActionExec, Subject: "printf 'fix:\tindented message' | git commit --amend -F -"},
+			},
+		},
+		{
+			name: "reword message with carriage return stripped",
+			spec: &Spec{Actions: []Action{
+				{
+					Action:  ActionReword,
+					Commit:  "abc1234",
+					Message: "title\r\n\r\nbody line",
+				},
+			}},
+			want: []TodoEntry{
+				{Action: ActionPick, Commit: "abc1234", Subject: "First commit"},
+				{Action: ActionExec, Subject: `printf 'title\n\nbody line' | git commit --amend -F -`},
+			},
+		},
+		{
+			name: "reword message with exclamation mark",
+			spec: &Spec{Actions: []Action{
+				{
+					Action:  ActionReword,
+					Commit:  "abc1234",
+					Message: "fix: this works!",
+				},
+			}},
+			want: []TodoEntry{
+				{Action: ActionPick, Commit: "abc1234", Subject: "First commit"},
+				{Action: ActionExec, Subject: "printf 'fix: this works!' | git commit --amend -F -"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -477,4 +548,126 @@ func TestExpandShortAction(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestRewordEscapingSingleLineProperty verifies that for any arbitrary
+// message string, the generated exec line is always a single line in
+// the todo file output.
+func TestRewordEscapingSingleLineProperty(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		msg := rapid.String().Draw(t, "message")
+
+		// Filter out NUL bytes since Validate() rejects them.
+		msg = strings.ReplaceAll(msg, "\x00", "")
+		if msg == "" {
+			return
+		}
+
+		original := []TodoEntry{
+			{Action: ActionPick, Commit: "abc1234", Subject: "Test"},
+		}
+		spec := &Spec{Actions: []Action{
+			{
+				Action:  ActionReword,
+				Commit:  "abc1234",
+				Message: msg,
+			},
+		}}
+
+		entries, err := ReorderToMatchSpec(spec, original)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		todo := GenerateTodoFromEntries(entries)
+		for _, line := range strings.Split(todo, "\n") {
+			if strings.HasPrefix(line, "exec ") {
+				// No raw newlines allowed in exec lines.
+				if strings.Contains(line, "\n") {
+					t.Fatalf(
+						"exec line contains raw newline "+
+							"for message %q", msg,
+					)
+				}
+			}
+		}
+	})
+}
+
+// TestRewordEscapingNoUnbalancedQuotesProperty verifies that the
+// generated printf command always has balanced single quotes.
+func TestRewordEscapingNoUnbalancedQuotesProperty(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		msg := rapid.String().Draw(t, "message")
+		msg = strings.ReplaceAll(msg, "\x00", "")
+		if msg == "" {
+			return
+		}
+
+		original := []TodoEntry{
+			{Action: ActionPick, Commit: "abc1234", Subject: "Test"},
+		}
+		spec := &Spec{Actions: []Action{
+			{
+				Action:  ActionReword,
+				Commit:  "abc1234",
+				Message: msg,
+			},
+		}}
+
+		entries, err := ReorderToMatchSpec(spec, original)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// The exec entry is the second one (after the pick).
+		execEntry := entries[1]
+		cmd := execEntry.Subject
+
+		// The command should start with printf ' and end with
+		// ' | git commit --amend -F -. Count unescaped single
+		// quotes: each '\'' contributes to balanced quoting.
+		if !strings.HasPrefix(cmd, "printf '") {
+			t.Fatalf("unexpected command prefix: %s", cmd)
+		}
+		if !strings.HasSuffix(cmd, "' | git commit --amend -F -") {
+			t.Fatalf("unexpected command suffix: %s", cmd)
+		}
+	})
+}
+
+// TestRewordNoCarriageReturnProperty verifies that carriage returns
+// are always stripped from the escaped output.
+func TestRewordNoCarriageReturnProperty(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		msg := rapid.String().Draw(t, "message")
+		msg = strings.ReplaceAll(msg, "\x00", "")
+		if msg == "" {
+			return
+		}
+
+		original := []TodoEntry{
+			{Action: ActionPick, Commit: "abc1234", Subject: "Test"},
+		}
+		spec := &Spec{Actions: []Action{
+			{
+				Action:  ActionReword,
+				Commit:  "abc1234",
+				Message: msg,
+			},
+		}}
+
+		entries, err := ReorderToMatchSpec(spec, original)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		execEntry := entries[1]
+		if strings.Contains(execEntry.Subject, "\r") {
+			t.Fatalf(
+				"exec line contains carriage return "+
+					"for message %q", msg,
+			)
+		}
+	})
 }
