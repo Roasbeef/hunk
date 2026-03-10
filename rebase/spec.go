@@ -96,6 +96,12 @@ func (a *Action) Validate() error {
 		return fmt.Errorf("%s action requires a commit hash", a.Action)
 	}
 
+	// Reject NUL bytes in reword messages. NUL would truncate the
+	// message at the C/shell boundary without any error.
+	if a.Action == ActionReword && strings.ContainsRune(a.Message, '\x00') {
+		return fmt.Errorf("reword message cannot contain NUL bytes")
+	}
+
 	return nil
 }
 
@@ -176,6 +182,19 @@ func ParseCLISpec(args []string) (*Spec, error) {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
+		}
+
+		// If the previous action has a message and this part
+		// doesn't look like a new action (not a hex hash and
+		// doesn't start with a known action prefix), treat it
+		// as a continuation of the message split on a comma.
+		if len(actions) > 0 {
+			prev := &actions[len(actions)-1]
+			if prev.Message != "" && !looksLikeAction(part) {
+				prev.Message += ", " + part
+
+				continue
+			}
 		}
 
 		action, err := parseActionSpec(part)
@@ -267,6 +286,24 @@ func isCommitHash(s string) bool {
 	}
 
 	return true
+}
+
+// looksLikeAction returns true if the string looks like a standalone
+// rebase action: either a bare hex commit hash or an action:commit pair.
+func looksLikeAction(s string) bool {
+	s = strings.TrimSpace(s)
+
+	if isCommitHash(s) {
+		return true
+	}
+
+	// Check for action:commit pattern.
+	actionStr, _, hasSep := strings.Cut(s, ":")
+	if !hasSep {
+		return false
+	}
+
+	return ActionType(strings.ToLower(actionStr)).Valid()
 }
 
 // splitPreservingQuotes splits by comma but preserves quoted strings.

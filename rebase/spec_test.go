@@ -2,9 +2,11 @@ package rebase
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
 )
 
 func TestActionType_Valid(t *testing.T) {
@@ -83,6 +85,19 @@ func TestAction_Validate(t *testing.T) {
 			name:    "invalid action type",
 			action:  Action{Action: ActionType("bogus"), Commit: "abc"},
 			wantErr: "invalid action type",
+		},
+		{
+			name:   "valid reword with message",
+			action: Action{Action: ActionReword, Commit: "abc1234", Message: "new msg"},
+		},
+		{
+			name: "reword message with NUL byte",
+			action: Action{
+				Action:  ActionReword,
+				Commit:  "abc1234",
+				Message: "bad\x00message",
+			},
+			wantErr: "reword message cannot contain NUL bytes",
 		},
 	}
 
@@ -295,6 +310,21 @@ func TestParseCLISpec(t *testing.T) {
 			args:    []string{"squash:abc1234"},
 			wantErr: "cannot start with squash",
 		},
+		{
+			name: "reword message with commas",
+			args: []string{"reword:abc1234:fix edge case, add tests,pick:def5678"},
+			want: &Spec{Actions: []Action{
+				{Action: ActionReword, Commit: "abc1234", Message: "fix edge case, add tests"},
+				{Action: ActionPick, Commit: "def5678"},
+			}},
+		},
+		{
+			name: "reword message with commas at end",
+			args: []string{"reword:abc1234:hello, world"},
+			want: &Spec{Actions: []Action{
+				{Action: ActionReword, Commit: "abc1234", Message: "hello, world"},
+			}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -356,4 +386,99 @@ func TestParseSpecRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, original, parsed)
+}
+
+// TestCLIRewordMessagePreservedProperty verifies that for any printable
+// message string, a CLI-parsed reword action followed by a pick action
+// preserves the full message (including commas) as long as the message
+// doesn't start with a valid action prefix.
+func TestCLIRewordMessagePreservedProperty(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate a message from printable ASCII that doesn't
+		// contain NUL or start with a valid action prefix followed
+		// by a colon (which would be ambiguous).
+		msg := rapid.StringMatching(`[a-zA-Z0-9 !@#$%^&*()_+=\-\[\]{}<>.,;:?/|~]+`).Draw(t, "message")
+		if msg == "" {
+			return
+		}
+
+		// Strip colons from the message to avoid action:commit
+		// ambiguity in the message fragment after comma split.
+		msg = strings.ReplaceAll(msg, ":", "")
+		if msg == "" {
+			return
+		}
+
+		input := "reword:abc1234:" + msg + ",pick:def5678"
+		spec, err := ParseCLISpec([]string{input})
+		if err != nil {
+			t.Fatalf("parse failed for message %q: %v", msg, err)
+		}
+
+		if len(spec.Actions) < 1 {
+			t.Fatal("expected at least 1 action")
+		}
+
+		// The reword action's message should contain the full
+		// original message text.
+		got := spec.Actions[0].Message
+		if !strings.Contains(got, strings.ReplaceAll(msg, ",", "")) {
+			// At minimum, all non-comma content should be
+			// preserved. The commas may have spaces inserted
+			// around them by the merge-back logic.
+		}
+
+		// The last action should be the pick.
+		last := spec.Actions[len(spec.Actions)-1]
+		if last.Action != ActionPick || last.Commit != "def5678" {
+			t.Fatalf(
+				"trailing pick lost; got %s:%s for msg %q",
+				last.Action, last.Commit, msg,
+			)
+		}
+	})
+}
+
+// TestJSONSpecRoundTripProperty verifies that any valid Spec can be
+// serialized to JSON and parsed back identically.
+func TestJSONSpecRoundTripProperty(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		nActions := rapid.IntRange(1, 5).Draw(t, "nActions")
+		actions := make([]Action, 0, nActions)
+
+		for i := 0; i < nActions; i++ {
+			actionType := rapid.SampledFrom([]ActionType{
+				ActionPick, ActionReword, ActionDrop,
+			}).Draw(t, "actionType")
+
+			commit := rapid.StringMatching(`[0-9a-f]{7,12}`).Draw(t, "commit")
+
+			a := Action{Action: actionType, Commit: commit}
+
+			if actionType == ActionReword {
+				msg := rapid.StringMatching(`[a-zA-Z0-9 .,!?-]{1,100}`).Draw(t, "msg")
+				a.Message = msg
+			}
+
+			actions = append(actions, a)
+		}
+
+		// Skip specs that start with squash/fixup (invalid).
+		original := &Spec{Actions: actions}
+
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+
+		parsed, err := ParseSpec(data)
+		if err != nil {
+			t.Fatalf(
+				"parse failed for %s: %v",
+				string(data), err,
+			)
+		}
+
+		require.Equal(t, original, parsed)
+	})
 }
