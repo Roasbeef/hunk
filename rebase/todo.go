@@ -208,6 +208,42 @@ func ReorderToMatchSpec(spec *Spec, original []TodoEntry) ([]TodoEntry, error) {
 			return nil, fmt.Errorf("commit %q not found", action.Commit)
 		}
 
+		// For reword actions with a message, emit a pick followed by
+		// an exec that amends the commit with the new message. This
+		// avoids needing an interactive GIT_EDITOR for the reword.
+		//
+		// Since exec lines must be a single line in the todo file,
+		// we use printf with escaped newlines piped to git commit
+		// --amend -F - to handle multi-line messages.
+		if action.Action == ActionReword && action.Message != "" {
+			result = append(result, TodoEntry{
+				Action:  ActionPick,
+				Commit:  entry.Commit,
+				Subject: entry.Subject,
+			})
+
+			// Escape the message for use inside a printf format
+			// string in a single-line shell command. Replace
+			// actual newlines with \n, single quotes with '\'',
+			// and percent signs with %% to avoid printf
+			// interpolation.
+			escaped := action.Message
+			escaped = strings.ReplaceAll(escaped, `\`, `\\`)
+			escaped = strings.ReplaceAll(escaped, "%", "%%")
+			escaped = strings.ReplaceAll(escaped, "'", `'\''`)
+			escaped = strings.ReplaceAll(escaped, "\n", `\n`)
+
+			result = append(result, TodoEntry{
+				Action: ActionExec,
+				Subject: fmt.Sprintf(
+					"printf '%s' | git commit --amend -F -",
+					escaped,
+				),
+			})
+
+			continue
+		}
+
 		// Use the spec's action but original's commit and subject.
 		result = append(result, TodoEntry{
 			Action:  action.Action,
