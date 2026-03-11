@@ -8,7 +8,7 @@ import (
 )
 
 // Version is the current version of hunk.
-const Version = "v1.0.0"
+const Version = "v1.0.2"
 
 // NewVersionCmd creates the version command.
 func NewVersionCmd() *cobra.Command {
