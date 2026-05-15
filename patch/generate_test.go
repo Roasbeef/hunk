@@ -733,12 +733,155 @@ func TestGenerate_PureAddSubrangeAnchoring(t *testing.T) {
 	}
 }
 
+// TestGenerate_PureDeleteSubrangeAnchoring is the symmetric counterpart
+// of TestGenerate_PureAddSubrangeAnchoring for pure-delete groups. The
+// pre-fix code emitted patches that dropped unselected deletions from
+// the body, leaving the old-side accounting inconsistent with the
+// actual old file — git apply then either rejected the patch outright
+// or, when only a single deletion in the middle of a group was
+// selected, emitted a no-context `-X,1 +X,0` hunk that git could not
+// anchor. The fix re-tags unselected deletions as context lines so the
+// emitted body matches the old file shape exactly.
+func TestGenerate_PureDeleteSubrangeAnchoring(t *testing.T) {
+	tests := []struct {
+		name         string
+		diffText     string
+		selections   []string
+		wantContains []string
+		wantAbsent   []string
+		// wantContextRuns lists the verbatim ` <line>` strings that
+		// should appear as context in the emitted patch. These are
+		// the unselected deletions re-tagged as context.
+		wantContextRuns []string
+	}{
+		{
+			// Non-contiguous selection inside a pure-delete group:
+			// stage -B and -D while leaving -C unselected. The
+			// emitted hunk must include `-B`, ` C`, `-D`.
+			name: "non-contiguous selection in pure-delete group",
+			diffText: `--- a/f.go
++++ b/f.go
+@@ -1,5 +1,2 @@
+ A
+-B
+-C
+-D
+ E
+`,
+			selections:      []string{"f.go:2,4"},
+			wantContains:    []string{"-B", "-D"},
+			wantAbsent:      []string{"-C"},
+			wantContextRuns: []string{" C"},
+		},
+		{
+			// Single deletion in the middle of a pure-delete
+			// group: stage only -C; the body must carry -B and
+			// -D as context anchors.
+			name: "middle single in pure-delete group",
+			diffText: `--- a/f.go
++++ b/f.go
+@@ -1,5 +1,2 @@
+ A
+-B
+-C
+-D
+ E
+`,
+			selections:      []string{"f.go:3"},
+			wantContains:    []string{"-C"},
+			wantAbsent:      []string{"-B\n", "-D\n"},
+			wantContextRuns: []string{" B", " D"},
+		},
+		{
+			// First-of-group selection: only -B selected, -C and
+			// -D must appear as context.
+			name: "first-of-group in pure-delete",
+			diffText: `--- a/f.go
++++ b/f.go
+@@ -1,5 +1,2 @@
+ A
+-B
+-C
+-D
+ E
+`,
+			selections:      []string{"f.go:2"},
+			wantContains:    []string{"-B"},
+			wantAbsent:      []string{"-C\n", "-D\n"},
+			wantContextRuns: []string{" C", " D"},
+		},
+		{
+			// Last-of-group selection: only -D selected, -B and
+			// -C must appear as context.
+			name: "last-of-group in pure-delete",
+			diffText: `--- a/f.go
++++ b/f.go
+@@ -1,5 +1,2 @@
+ A
+-B
+-C
+-D
+ E
+`,
+			selections:      []string{"f.go:4"},
+			wantContains:    []string{"-D"},
+			wantAbsent:      []string{"-B\n", "-C\n"},
+			wantContextRuns: []string{" B", " C"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := diff.Parse(tc.diffText)
+			require.NoError(t, err)
+
+			selections, err := diff.ParseSelections(tc.selections)
+			require.NoError(t, err)
+
+			result, err := patch.Generate(parsed, selections)
+			require.NoError(t, err)
+			require.NotEmpty(t, result)
+
+			s := string(result)
+			for _, want := range tc.wantContains {
+				require.Contains(t, s, want,
+					"missing required line.\nPatch:\n%s",
+					s)
+			}
+			for _, absent := range tc.wantAbsent {
+				require.NotContains(t, s, absent,
+					"unselected line leaked as deletion.\n"+
+						"Patch:\n%s", s)
+			}
+			for _, ctx := range tc.wantContextRuns {
+				require.Contains(t, s, ctx+"\n",
+					"unselected deletion was not "+
+						"re-tagged as context.\n"+
+						"Patch:\n%s", s)
+			}
+
+			verifyValidPatch(t, result)
+		})
+	}
+}
+
 // countAnchorContext counts the leading and trailing context lines around
 // the FIRST addition in a single-hunk patch. Leading is the run of context
 // lines from the start of the hunk body to the first `+`; trailing is the
 // run of context lines from the LAST `+` to the end of the hunk body.
 // Returns 0 for either count when the patch is malformed or contains no
-// additions. Helper for TestGenerate_PureAddSubrangeAnchoring.
+// additions.
+//
+// Assumption: the hunk body has additions in a contiguous run (no real
+// context lines wedged between two `+` lines). All patches the patch
+// package currently emits satisfy this — a single block produces one
+// contiguous run of `+` lines bracketed by context. If that ever changes
+// (e.g., a future emitter interleaves context inside a hunk body), the
+// "first + to last +" span here would swallow internal context lines and
+// inflate counts; callers would then need a more precise definition of
+// "the leading/trailing anchor around the change".
+//
+// Helper for TestGenerate_PureAddSubrangeAnchoring and the property tests.
 func countAnchorContext(patch string) (lead, trail int) {
 	lines := strings.Split(patch, "\n")
 

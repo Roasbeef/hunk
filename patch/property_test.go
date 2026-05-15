@@ -158,6 +158,133 @@ func TestProperty_PureAddSubrangeIsAlwaysAnchored(t *testing.T) {
 	})
 }
 
+// TestProperty_PureDeleteSubrangeIsAlwaysAnchored is the symmetric
+// integration property for pure-delete groups. It builds a struct file
+// with N pre-existing fields, deletes ALL of them in the modified file
+// (creating one pure-delete group of size N), then picks a random
+// non-empty subset of those deletions to STAGE. The generated patch is
+// piped through real `git apply --cached`; afterward the staged file
+// must equal the original file minus exactly the selected fields, with
+// the unselected fields preserved verbatim in their original positions.
+//
+// This catches:
+//   - Pure-delete subranges that drop unselected deletions from the
+//     body and produce an invalid patch git apply rejects.
+//   - Single-deletion-in-the-middle hunks with no anchor context that
+//     git apply cannot place.
+//   - Off-by-one position errors in the generated `@@` headers.
+func TestProperty_PureDeleteSubrangeIsAlwaysAnchored(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		numFields := rapid.IntRange(2, 12).Draw(rt, "numFields")
+
+		// Build the original file: struct with numFields pre-existing
+		// fields. Each field name is unique so we can identify it.
+		var origLines []string
+		origLines = append(origLines,
+			"package foo",
+			"",
+			"type S struct {",
+		)
+		var fieldNames []string
+		for i := range numFields {
+			fieldNames = append(
+				fieldNames, fmt.Sprintf("Field%d", i),
+			)
+			origLines = append(origLines,
+				"\t"+fieldNames[i]+" int",
+			)
+		}
+		origLines = append(origLines,
+			"}",
+			"",
+			"func Helper() {}",
+		)
+
+		// Modified file: drop every field. The diff has a single
+		// pure-delete group of length numFields.
+		var modLines []string
+		modLines = append(modLines, origLines[:3]...)
+		modLines = append(modLines, origLines[3+numFields:]...)
+
+		// Random non-empty subset of fields to STAGE for deletion.
+		stageMask := rapid.SliceOfN(
+			rapid.Bool(), numFields, numFields,
+		).Draw(rt, "stageMask")
+		anyStaged := false
+		for _, b := range stageMask {
+			if b {
+				anyStaged = true
+				break
+			}
+		}
+		if !anyStaged {
+			stageMask[0] = true
+		}
+
+		// In the OLD file, fields occupy lines 4..3+numFields.
+		var stagedLineNums []int
+		for i, sel := range stageMask {
+			if sel {
+				stagedLineNums = append(stagedLineNums, 4+i)
+			}
+		}
+
+		repoDir := newPropertyRepo(rt)
+		origPath := filepath.Join(repoDir, "test.go")
+		writeAll(rt, origPath, origLines)
+		runGit(rt, repoDir, "add", "test.go")
+		runGit(rt, repoDir, "commit", "-q", "-m", "init")
+
+		writeAll(rt, origPath, modLines)
+
+		diffText := runGit(rt, repoDir, "diff", "--no-color")
+		parsed, err := diff.Parse(diffText)
+		require.NoError(rt, err)
+
+		var parts []string
+		for _, ln := range stagedLineNums {
+			parts = append(parts, fmt.Sprintf("%d", ln))
+		}
+		sel, err := diff.ParseFileSelection(
+			"test.go:" + strings.Join(parts, ","),
+		)
+		require.NoError(rt, err)
+
+		patchBytes, err := patch.Generate(
+			parsed, []*diff.FileSelection{sel},
+		)
+		require.NoError(rt, err)
+		require.NotEmpty(rt, patchBytes)
+
+		if err := applyCached(repoDir, patchBytes); err != nil {
+			rt.Fatalf(
+				"git apply --cached rejected patch: %v\n"+
+					"Patch:\n%s",
+				err, patchBytes,
+			)
+		}
+
+		// Build the expected staged file: original minus the
+		// staged fields, with unstaged fields preserved in place.
+		var expected []string
+		expected = append(expected, origLines[:3]...)
+		for i, sel := range stageMask {
+			if !sel {
+				expected = append(expected,
+					"\t"+fieldNames[i]+" int",
+				)
+			}
+		}
+		expected = append(expected, origLines[3+numFields:]...)
+
+		got := readStagedFile(rt, repoDir, "test.go")
+		require.Equal(rt, strings.Join(expected, "\n")+"\n", got,
+			"staged file content mismatch.\nPatch:\n%s",
+			patchBytes,
+		)
+	})
+}
+
 // TestProperty_PatchHunksAlwaysAnchored verifies a purely-textual property
 // on the patches hunk emits: every emitted hunk has at least one context
 // line either immediately before the first addition OR immediately after

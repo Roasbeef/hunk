@@ -78,6 +78,19 @@ type changeBlock struct {
 	endIdx   int // Index where this block ends (exclusive).
 }
 
+// lineRef describes a single line included in the output hunk. It pairs
+// an index into the original hunk's Lines slice with an optional override
+// that forces the emitted line to render as a context line regardless of
+// its original Op. The override is used for unselected deletions that fall
+// inside a coalesced block range or in the context-expansion path: they
+// exist in the old file at their recorded position and survive in the new
+// file after our partial patch applies, so the patch must describe them
+// as context lines to match the actual old-file shape.
+type lineRef struct {
+	idx       int  // Index into original.Lines.
+	asContext bool // If true, render with Op=OpContext.
+}
+
 // filterHunk filters a single hunk based on selection. When non-contiguous
 // changes are selected, the hunk is split into multiple hunks, one for each
 // contiguous block of selected changes. Each resulting hunk is independently
@@ -108,10 +121,13 @@ func filterHunk(hunk *diff.Hunk, sel *diff.FileSelection) []*diff.Hunk {
 // hunk. Each contiguous run of change lines (no context between them) forms
 // a "group"; within a group, all selected lines are coalesced into a single
 // block spanning from the first selected line to the last. The block range
-// may include unselected change lines in the middle — those are filtered
-// out at patch-emission time. This coalescing is what lets a selection like
-// `:5,8` against a single pure-add group produce one anchored hunk instead
-// of two hunks neither of which has trailing context.
+// may include unselected change lines in the middle — buildHunkFromBlock
+// drops unselected additions and re-tags unselected deletions as context.
+// This coalescing is what lets a selection like `:5,8` against a single
+// pure-add group produce one anchored hunk instead of two hunks neither of
+// which has trailing context, and is what lets `:2,4` against a pure-delete
+// group produce a single hunk that correctly describes the unselected
+// deletion in the middle.
 //
 // For mixed change groups (containing both additions and deletions), the
 // group is treated as atomic: if ANY line in the group is selected, ALL
@@ -121,10 +137,11 @@ func filterHunk(hunk *diff.Hunk, sel *diff.FileSelection) []*diff.Hunk {
 //
 // It also returns the per-line selection mask. A `true` entry on a change
 // line means "this change line is selected and should appear in the output
-// patch"; `false` on a change line means "this change line lives in the
-// same hunk but is not being staged". Callers use the mask to filter the
-// block's range and to walk past unselected additions when expanding
-// anchor context around a block.
+// patch as a real change"; `false` on a change line means "this change
+// line lives in the same hunk but is not being staged". Callers use the
+// mask to decide how to treat each line of the block range and the
+// context-expansion path: unselected additions are dropped, unselected
+// deletions are re-tagged as context, and selected lines render unchanged.
 func findChangeBlocks(hunk *diff.Hunk, sel *diff.FileSelection) (
 	[]changeBlock, []bool,
 ) {
@@ -217,30 +234,54 @@ func findChangeBlocks(hunk *diff.Hunk, sel *diff.FileSelection) (
 
 // buildHunkFromBlock creates a valid hunk from a change block. It walks
 // outward from the block, collecting up to maxContext (3) context lines on
-// each side. The walk steps past UNSELECTED ADDITIONS — additions that exist
-// only in the new file and therefore cannot appear in the patch — to reach
-// real anchor context in the old file. Without this, a block consisting of
-// addition lines wedged inside a larger pure-add group would emit a hunk
-// with no anchor, which `git apply` either rejects ("patch does not apply")
-// or, worse, silently fuzzes onto the wrong line (often EOF).
+// each side. The walk handles unselected change lines asymmetrically:
 //
-// The walk does NOT step past unselected DELETIONS, selected change lines
-// (which belong to other blocks), or context lines beyond the maxContext
-// budget. Unselected deletions exist in the old file at their recorded
-// positions, so skipping over them would break the old-side line accounting
-// of the resulting patch.
+//   - Unselected ADDITIONS are stepped past silently (they live only in
+//     the new file, so they cannot appear in a patch describing the old
+//     file). Without this, a block of additions wedged inside a larger
+//     pure-add group would emit a hunk with no anchor — git apply either
+//     rejects ("patch does not apply") or silently fuzzes onto the wrong
+//     line (often EOF).
+//
+//   - Unselected DELETIONS are emitted in the body as CONTEXT lines (Op
+//     flipped to OpContext at materialization). They exist in the old
+//     file at their recorded positions and survive in the new file after
+//     our partial patch applies, so re-tagging them as context produces a
+//     body that matches the actual old-file shape. Without this, a
+//     selection like `:2,4` against a `-B,-C,-D` group would emit a patch
+//     missing -C from the old-side accounting and git apply would reject
+//     it.
+//
+// The walk still STOPS at selected change lines (which belong to other
+// blocks) and at context lines beyond the maxContext budget.
 func buildHunkFromBlock(
 	original *diff.Hunk, block changeBlock, selected []bool,
 ) *diff.Hunk {
-	indices := collectHunkIndices(original, block, selected)
-	if len(indices) == 0 {
+	refs := collectHunkIndices(original, block, selected)
+	if len(refs) == 0 {
 		return nil
 	}
 
-	// Materialize the included lines.
-	lines := make([]diff.DiffLine, len(indices))
-	for i, idx := range indices {
-		lines[i] = original.Lines[idx]
+	// Materialize the included lines, applying the asContext override.
+	lines := make([]diff.DiffLine, len(refs))
+	for i, ref := range refs {
+		line := original.Lines[ref.idx]
+		if ref.asContext {
+			// An unselected deletion re-tagged as context. We keep
+			// the original Content and OldLineNum (still valid in
+			// the old file); NewLineNum stays at its original 0
+			// since the patch text only consults Op and Content.
+			// RecalculateLineCounts uses Op so the line is now
+			// counted on both the old and new side, matching the
+			// fact that the line survives the partial patch.
+			line.Op = diff.OpContext
+		}
+		lines[i] = line
+	}
+
+	indices := make([]int, len(refs))
+	for i, ref := range refs {
+		indices[i] = ref.idx
 	}
 
 	result := &diff.Hunk{
@@ -255,56 +296,77 @@ func buildHunkFromBlock(
 	return result
 }
 
-// collectHunkIndices returns the indices into original.Lines that should
-// appear in the output hunk, in original-hunk order. It starts with the
-// selected change lines from the block, then prepends backward-expansion
-// context and appends forward-expansion context. The expansion walks past
-// UNSELECTED ADDITIONS — additions that exist only in the new file and
-// therefore cannot anchor a patch — but stops at selected change lines
-// (they belong to other blocks) and at unselected deletions (they exist
-// in the old file at recorded positions and dropping them would break the
-// old-side line accounting).
+// collectHunkIndices returns the line refs that should appear in the
+// output hunk, in original-hunk order. It starts with the selected change
+// lines from the block (re-tagging unselected deletions inside the block
+// range as context lines and dropping unselected additions), then prepends
+// backward-expansion context and appends forward-expansion context. The
+// context-expansion walk steps past unselected additions silently and
+// captures unselected deletions as context lines (counted against the
+// context budget). It stops at selected change lines (those belong to
+// other blocks).
 func collectHunkIndices(
 	original *diff.Hunk, block changeBlock, selected []bool,
-) []int {
+) []lineRef {
 	const maxContext = 3
 
-	// Block lines: context lines (rare inside a block in practice)
-	// plus only the SELECTED change lines. Unselected change lines
-	// inside the block range come from the same pure-add or pure-delete
-	// group as the surrounding selected lines; the patch silently drops
-	// them so the staged file contains exactly what was selected.
-	var indices []int
+	// Block lines: real context lines (rare inside a block in
+	// practice) and selected change lines render unchanged.
+	// Unselected ADDITIONS are dropped entirely (they live only in
+	// the new file and we're not staging them). Unselected DELETIONS
+	// are re-tagged as context — they exist in the old file at the
+	// recorded position and stay in the new file after our partial
+	// patch applies.
+	var refs []lineRef
 	for i := block.startIdx; i < block.endIdx; i++ {
 		line := original.Lines[i]
-		if !line.IsChange() || selected[i] {
-			indices = append(indices, i)
+		switch {
+		case !line.IsChange():
+			refs = append(refs, lineRef{idx: i})
+		case selected[i]:
+			refs = append(refs, lineRef{idx: i})
+		case line.Op == diff.OpDelete:
+			refs = append(refs, lineRef{idx: i, asContext: true})
 		}
+		// Unselected additions inside the block range are dropped.
 	}
 
 	backward := expandContext(
 		original, selected, block.startIdx-1, -1, maxContext,
 	)
-	indices = append(backward, indices...)
+	refs = append(backward, refs...)
 
 	forward := expandContext(
 		original, selected, block.endIdx, +1, maxContext,
 	)
-	indices = append(indices, forward...)
+	refs = append(refs, forward...)
 
-	return indices
+	return refs
 }
 
 // expandContext walks original.Lines starting at `start`, stepping by
 // `step` (-1 for backward, +1 for forward), and returns up to maxContext
-// context-line indices encountered. It skips unselected additions and
-// stops at any other non-context line. For backward walks the returned
-// slice is in ascending order so it can be prepended verbatim.
+// line refs to use as anchor context. Real context lines are captured
+// as-is. Unselected additions are silently stepped past and do NOT count
+// against the budget (they live only in the new file). Unselected
+// deletions are captured as context lines (asContext=true) and DO count
+// against the budget — they exist in the old file and re-tagging them as
+// context describes their presence accurately. Any other non-context
+// encounter (selected change line belonging to another block, end of
+// hunk) stops the walk. For backward walks the returned slice is in
+// ascending order so it can be prepended verbatim.
 func expandContext(
 	original *diff.Hunk, selected []bool, start, step, limit int,
-) []int {
-	var out []int
+) []lineRef {
+	var out []lineRef
 	i := start
+	prepend := func(ref lineRef) {
+		if step < 0 {
+			out = append([]lineRef{ref}, out...)
+		} else {
+			out = append(out, ref)
+		}
+	}
 	for len(out) < limit {
 		if i < 0 || i >= len(original.Lines) {
 			break
@@ -312,13 +374,16 @@ func expandContext(
 		line := original.Lines[i]
 		switch {
 		case line.Op == diff.OpContext:
-			if step < 0 {
-				out = append([]int{i}, out...)
-			} else {
-				out = append(out, i)
-			}
+			prepend(lineRef{idx: i})
 		case line.Op == diff.OpAdd && !selected[i]:
-			// Walk past — additions live only in the new file.
+			// Walk past — additions live only in the new file
+			// and do not consume the context budget.
+		case line.Op == diff.OpDelete && !selected[i]:
+			// Re-tag the unselected deletion as a context line.
+			// It exists in the old file at this position and
+			// survives our partial patch, so this is the correct
+			// old-side description.
+			prepend(lineRef{idx: i, asContext: true})
 		default:
 			return out
 		}
@@ -345,12 +410,17 @@ func computeOldStart(original *diff.Hunk, indices []int) int {
 	return original.OldStart
 }
 
-// computeNewStart returns the NewStart for the output hunk. Within a
-// single hunk (before any later hunks shift staged-file positions), the
-// first line lands at the same staged-file position as its old-file
-// position — so we use OldLineNum when the first line has a stable
-// old-side anchor (context line or deletion). Falls back to the original
-// NewLineNum when the hunk opens with an addition.
+// computeNewStart returns the NewStart for the output hunk. When the
+// first emitted line has a stable old-side anchor (a context line or a
+// deletion), we use its OldLineNum: for a single-hunk patch this is the
+// staged-file position at apply time (the staged file equals the old
+// file before any of our hunks have run). For multi-hunk patches that
+// emit multiple sub-hunks against the same file, the NewStart of later
+// sub-hunks may be off relative to the post-earlier-hunks staged file —
+// but git apply re-anchors on context content, so this is a hint rather
+// than a hard constraint. The fallback walks back through the ORIGINAL
+// hunk to find a line with a non-zero NewLineNum when the sub-hunk opens
+// with an addition.
 func computeNewStart(original *diff.Hunk, indices []int) int {
 	first := original.Lines[indices[0]]
 	switch {

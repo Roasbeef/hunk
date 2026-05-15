@@ -567,7 +567,7 @@ func main() {}
 // for the silent-misplacement bug originally reported against hunk: when
 // new fields are inserted inside an existing Go struct and the user stages
 // only a sub-range of the new fields, the staged content must land inside
-// the struct body, NOT appended at EOF after `expandTilde` and friends.
+// the struct body, NOT appended at EOF after `func Helper()`.
 //
 // The bug shape: a pure-addition group with no context lines between the
 // selected sub-range and the surrounding unselected adds emitted a hunk
@@ -665,18 +665,7 @@ func Helper() {}
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "initial")
 
-	modified := `package foo
-
-type S struct {
-	Field1 int
-	Field2 int
-	Field3 int
-	Field4 int
-	Field5 int
-}
-
-func Helper() {}
-`
+	modified := fiveFieldStructFile
 	writeFile(t, dir, "test.go", modified)
 
 	// Skip Field3 and Field4 — stage only the first and last new
@@ -708,6 +697,140 @@ func Helper() {}
 	require.Equal(t, expected, staged,
 		"non-contiguous selection must land adjacently inside the "+
 			"struct in selection order",
+	)
+}
+
+// fiveFieldStructFile is a shared text fixture: a Go file with a struct
+// holding five sequentially-named fields. Several pure-add and
+// pure-delete subrange tests share this exact shape, so we extract it
+// here to avoid stringly-duplicated literals.
+const fiveFieldStructFile = `package foo
+
+type S struct {
+	Field1 int
+	Field2 int
+	Field3 int
+	Field4 int
+	Field5 int
+}
+
+func Helper() {}
+`
+
+// TestStagePureDeleteSubrangeInsideStruct is the symmetric regression
+// test for pure-delete groups: when the user stages a sub-range of
+// deletions inside a larger pure-delete group, the patch must correctly
+// describe the unselected deletions as context lines so git apply
+// accepts it and the staged file retains exactly the unselected lines.
+// Without the fix, the unselected deletion wedged between two selected
+// ones was dropped from the patch body and git apply rejected the patch
+// with "patch does not apply".
+func TestStagePureDeleteSubrangeInsideStruct(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	original := fiveFieldStructFile
+	writeFile(t, dir, "test.go", original)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	// Remove Field2..Field4. Diff has one pure-delete group of 3 lines.
+	modified := `package foo
+
+type S struct {
+	Field1 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", modified)
+
+	// Stage only Field2 and Field4 (old lines 5 and 7), keeping Field3
+	// (old line 6) un-staged inside the group. This is the pure-delete
+	// analogue of TestStageNonContiguousAddsInSameGroup.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs([]string{"--dir", dir, "stage", "test.go:5,7"})
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+
+	err := rootCmd.Execute()
+	require.NoError(t, err,
+		"non-contiguous staging within same pure-delete group "+
+			"must succeed",
+	)
+
+	staged := gitCmd(t, dir, "show", ":test.go")
+	expected := `package foo
+
+type S struct {
+	Field1 int
+	Field3 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	require.Equal(t, expected, staged,
+		"pure-delete subrange must remove selected fields and "+
+			"preserve the unselected one in between",
+	)
+}
+
+// TestStagePureDeleteMiddleOnlySingle covers the single-selection-in-
+// the-middle-of-a-pure-delete-group case. Selecting only the middle of
+// `-B,-C,-D` pre-fix emitted a hunk with no anchor context on either
+// side (both neighbours are unselected deletions). With unselected
+// deletions now re-tagged as context, the hunk picks up `-B` and `-D`
+// as context anchors and the patch applies cleanly.
+func TestStagePureDeleteMiddleOnlySingle(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	original := fiveFieldStructFile
+	writeFile(t, dir, "test.go", original)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	modified := `package foo
+
+type S struct {
+	Field1 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", modified)
+
+	// Stage only Field3 (old line 6) — the middle deletion.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs([]string{"--dir", dir, "stage", "test.go:6"})
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+
+	err := rootCmd.Execute()
+	require.NoError(t, err,
+		"single-selection inside a pure-delete group must succeed",
+	)
+
+	staged := gitCmd(t, dir, "show", ":test.go")
+	expected := `package foo
+
+type S struct {
+	Field1 int
+	Field2 int
+	Field4 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	require.Equal(t, expected, staged,
+		"only the selected deletion must be applied; the "+
+			"surrounding unselected deletions stay in place",
 	)
 }
 
