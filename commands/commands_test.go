@@ -562,6 +562,155 @@ func main() {}
 	require.NotContains(t, cached, "-func b1()")
 	require.NotContains(t, cached, "+func newB()")
 }
+
+// TestStagePureAddSubrangeInsideStruct is the end-to-end regression test
+// for the silent-misplacement bug originally reported against hunk: when
+// new fields are inserted inside an existing Go struct and the user stages
+// only a sub-range of the new fields, the staged content must land inside
+// the struct body, NOT appended at EOF after `expandTilde` and friends.
+//
+// The bug shape: a pure-addition group with no context lines between the
+// selected sub-range and the surrounding unselected adds emitted a hunk
+// with no anchor, which `git apply --cached` silently fuzzed onto the file
+// boundary. The patch package now coalesces selections within the same
+// pure-add group and walks past unselected additions to grab real anchor
+// context, producing a hunk that places the selected lines exactly where
+// the user expected them.
+func TestStagePureAddSubrangeInsideStruct(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	original := `package foo
+
+type S struct {
+	Field1 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", original)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	// Insert five new fields inside the struct body. The unified diff
+	// will show a single pure-add group from new lines 5..9.
+	modified := `package foo
+
+type S struct {
+	Field1 int
+	Field2 int
+	Field3 int
+	Field4 int
+	Field5 int
+	Field6 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", modified)
+
+	// Stage just the middle two — Field3 and Field4 — exactly the
+	// shape of the original bug report. Without the fix this either
+	// errored out with "patch does not apply" or silently placed the
+	// fields after `func Helper()`.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs([]string{"--dir", dir, "stage", "test.go:6-7"})
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+
+	err := rootCmd.Execute()
+	require.NoError(t, err,
+		"pure-add subrange staging must not error",
+	)
+
+	// The staged version of the file must contain Field3 and Field4
+	// inside the struct, in the original Field-N ordering. The
+	// unselected fields must NOT be staged.
+	staged := gitCmd(t, dir, "show", ":test.go")
+	expected := `package foo
+
+type S struct {
+	Field1 int
+	Field3 int
+	Field4 int
+}
+
+func Helper() {}
+`
+	require.Equal(t, expected, staged,
+		"staged content must place selected fields inside the "+
+			"struct, not at EOF",
+	)
+}
+
+// TestStageNonContiguousAddsInSameGroup is the regression test for the
+// secondary symptom: when two non-adjacent selections target lines in the
+// SAME pure-add group, the two selections must coalesce into one hunk
+// with proper anchor context on both sides. Otherwise the second hunk
+// would lack a leading anchor and `git apply` would silently misplace it.
+func TestStageNonContiguousAddsInSameGroup(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	original := `package foo
+
+type S struct {
+	Field1 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", original)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	modified := `package foo
+
+type S struct {
+	Field1 int
+	Field2 int
+	Field3 int
+	Field4 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", modified)
+
+	// Skip Field3 and Field4 — stage only the first and last new
+	// fields. With the pre-fix code these were two separate blocks
+	// neither of which had complete anchor context.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs([]string{"--dir", dir, "stage", "test.go:5,8"})
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+
+	err := rootCmd.Execute()
+	require.NoError(t, err,
+		"non-contiguous staging within same pure-add group must "+
+			"succeed",
+	)
+
+	staged := gitCmd(t, dir, "show", ":test.go")
+	expected := `package foo
+
+type S struct {
+	Field1 int
+	Field2 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	require.Equal(t, expected, staged,
+		"non-contiguous selection must land adjacently inside the "+
+			"struct in selection order",
+	)
+}
+
 // TestStageErrorDoesNotPrintUsage verifies the cobra footgun fix: when the
 // stage command's RunE returns an error (e.g., selection doesn't match any
 // line), the command must NOT dump its help text. The help dump made real
