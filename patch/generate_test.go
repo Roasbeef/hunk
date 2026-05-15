@@ -549,3 +549,250 @@ func TestGenerate_NonContiguousSelections(t *testing.T) {
 		})
 	}
 }
+
+// TestGenerate_PureAddSubrangeAnchoring is the regression test for the
+// silent-misplacement bug: selecting a sub-range of additions wedged inside
+// a larger pure-add group used to emit a hunk with no anchor context (or
+// at best only leading context), which `git apply --cached` would either
+// reject outright or — worse — silently fuzz onto a wrong location, often
+// EOF. Each case here selects a sub-range and asserts the generated hunk
+// has BOTH leading and trailing context, plus that no unselected additions
+// from the same group leak into the patch.
+func TestGenerate_PureAddSubrangeAnchoring(t *testing.T) {
+	tests := []struct {
+		name       string
+		diffText   string
+		selections []string
+		// wantContains is content that MUST appear in the patch.
+		wantContains []string
+		// wantAbsent is content that MUST NOT appear in the patch.
+		wantAbsent []string
+		// wantLeadCtx is the minimum number of leading context lines
+		// expected. 0 means no expectation (e.g., at file start).
+		wantLeadCtx int
+		// wantTrailCtx is the minimum number of trailing context lines.
+		wantTrailCtx int
+	}{
+		{
+			// Middle sub-range of a 5-line pure-add group. This is
+			// the exact shape of the reported bug — added fields
+			// inside a struct body. Must produce a single anchored
+			// hunk with context on both sides.
+			name: "middle subrange of pure-add group",
+			diffText: `--- a/test.go
++++ b/test.go
+@@ -1,4 +1,9 @@
+ package foo
+ type S struct {
+ 	Field1 int
++	Field2 int
++	Field3 int
++	Field4 int
++	Field5 int
++	Field6 int
+ }
+`,
+			selections:   []string{"test.go:6-7"},
+			wantContains: []string{"+\tField4 int", "+\tField5 int"},
+			wantAbsent: []string{
+				"+\tField2 int",
+				"+\tField3 int",
+				"+\tField6 int",
+			},
+			wantLeadCtx:  3,
+			wantTrailCtx: 1,
+		},
+		{
+			// First addition only — must skip the four trailing
+			// unselected adds and anchor on the `}` context that
+			// follows them.
+			name: "first add of pure-add group anchors past unselected adds",
+			diffText: `--- a/test.go
++++ b/test.go
+@@ -1,4 +1,9 @@
+ package foo
+ type S struct {
+ 	Field1 int
++	Field2 int
++	Field3 int
++	Field4 int
++	Field5 int
++	Field6 int
+ }
+`,
+			selections:   []string{"test.go:4"},
+			wantContains: []string{"+\tField2 int"},
+			wantAbsent: []string{
+				"+\tField3 int",
+				"+\tField4 int",
+				"+\tField5 int",
+				"+\tField6 int",
+			},
+			wantLeadCtx:  3,
+			wantTrailCtx: 1,
+		},
+		{
+			// Last addition only — must skip leading unselected
+			// adds and anchor on the `Field1 int` context that
+			// precedes them.
+			name: "last add of pure-add group anchors past unselected adds",
+			diffText: `--- a/test.go
++++ b/test.go
+@@ -1,4 +1,9 @@
+ package foo
+ type S struct {
+ 	Field1 int
++	Field2 int
++	Field3 int
++	Field4 int
++	Field5 int
++	Field6 int
+ }
+`,
+			selections:   []string{"test.go:8"},
+			wantContains: []string{"+\tField6 int"},
+			wantAbsent: []string{
+				"+\tField2 int",
+				"+\tField3 int",
+				"+\tField4 int",
+				"+\tField5 int",
+			},
+			wantLeadCtx:  1,
+			wantTrailCtx: 1,
+		},
+		{
+			// Non-contiguous selection within the same pure-add
+			// group. Without the coalescing fix this would produce
+			// two unanchored hunks; with the fix it collapses to a
+			// single anchored hunk that emits just the selected
+			// lines adjacent to each other.
+			name: "non-contiguous selection in same pure-add group merges",
+			diffText: `--- a/test.go
++++ b/test.go
+@@ -1,4 +1,9 @@
+ package foo
+ type S struct {
+ 	Field1 int
++	Field2 int
++	Field3 int
++	Field4 int
++	Field5 int
++	Field6 int
+ }
+`,
+			selections: []string{"test.go:4,8"},
+			wantContains: []string{
+				"+\tField2 int",
+				"+\tField6 int",
+			},
+			wantAbsent: []string{
+				"+\tField3 int",
+				"+\tField4 int",
+				"+\tField5 int",
+			},
+			wantLeadCtx:  3,
+			wantTrailCtx: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := diff.Parse(tc.diffText)
+			require.NoError(t, err)
+
+			selections, err := diff.ParseSelections(tc.selections)
+			require.NoError(t, err)
+
+			result, err := patch.Generate(parsed, selections)
+			require.NoError(t, err)
+			require.NotEmpty(t, result, "patch should not be empty")
+
+			s := string(result)
+			for _, want := range tc.wantContains {
+				require.Contains(t, s, want,
+					"missing required line.\nPatch:\n%s", s)
+			}
+			for _, absent := range tc.wantAbsent {
+				require.NotContains(t, s, absent,
+					"unselected line leaked into patch.\n"+
+						"Patch:\n%s", s)
+			}
+
+			lead, trail := countAnchorContext(s)
+			require.GreaterOrEqual(t, lead, tc.wantLeadCtx,
+				"insufficient leading context "+
+					"(have %d, want >=%d).\nPatch:\n%s",
+				lead, tc.wantLeadCtx, s)
+			require.GreaterOrEqual(t, trail, tc.wantTrailCtx,
+				"insufficient trailing context "+
+					"(have %d, want >=%d).\nPatch:\n%s",
+				trail, tc.wantTrailCtx, s)
+
+			verifyValidPatch(t, result)
+		})
+	}
+}
+
+// countAnchorContext counts the leading and trailing context lines around
+// the FIRST addition in a single-hunk patch. Leading is the run of context
+// lines from the start of the hunk body to the first `+`; trailing is the
+// run of context lines from the LAST `+` to the end of the hunk body.
+// Returns 0 for either count when the patch is malformed or contains no
+// additions. Helper for TestGenerate_PureAddSubrangeAnchoring.
+func countAnchorContext(patch string) (lead, trail int) {
+	lines := strings.Split(patch, "\n")
+
+	// Find the start of the first hunk body (line after first @@).
+	bodyStart := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "@@") {
+			bodyStart = i + 1
+			break
+		}
+	}
+	if bodyStart < 0 {
+		return 0, 0
+	}
+
+	// Find first + and last +.
+	firstAdd := -1
+	lastAdd := -1
+	bodyEnd := len(lines)
+	for i := bodyStart; i < len(lines); i++ {
+		switch {
+		case strings.HasPrefix(lines[i], "@@"):
+			bodyEnd = i
+			i = len(lines)
+		case strings.HasPrefix(lines[i], "+++"):
+			// Skip file headers if any.
+		case strings.HasPrefix(lines[i], "---"):
+		case strings.HasPrefix(lines[i], "+"):
+			if firstAdd < 0 {
+				firstAdd = i
+			}
+			lastAdd = i
+		}
+	}
+	if firstAdd < 0 {
+		return 0, 0
+	}
+
+	// Walk back from firstAdd while seeing context (` ` prefix).
+	for i := firstAdd - 1; i >= bodyStart; i-- {
+		if strings.HasPrefix(lines[i], " ") {
+			lead++
+			continue
+		}
+		break
+	}
+	// Walk forward from lastAdd while seeing context.
+	for i := lastAdd + 1; i < bodyEnd; i++ {
+		if strings.HasPrefix(lines[i], " ") {
+			trail++
+			continue
+		}
+		break
+	}
+
+	return lead, trail
+}
