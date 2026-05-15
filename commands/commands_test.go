@@ -562,3 +562,44 @@ func main() {}
 	require.NotContains(t, cached, "-func b1()")
 	require.NotContains(t, cached, "+func newB()")
 }
+// TestStageErrorDoesNotPrintUsage verifies the cobra footgun fix: when the
+// stage command's RunE returns an error (e.g., selection doesn't match any
+// line), the command must NOT dump its help text. The help dump made real
+// failures invisible to scripts and AI agents piping stdout/stderr.
+func TestStageErrorDoesNotPrintUsage(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	writeFile(t, dir, "main.go", "package main\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	// Now make a change so there's a diff to operate on.
+	writeFile(t, dir, "main.go", "package main\n// added\n")
+
+	// Select a line number with no matching change.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs(
+		[]string{"--dir", dir, "stage", "main.go:9999"},
+	)
+
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+
+	err := rootCmd.Execute()
+	require.Error(t, err,
+		"selection with no matching lines must return an error",
+	)
+
+	// Cobra writes the help block (signalled by "Usage:" and the
+	// "Examples:" header) on RunE error unless SilenceUsage is set.
+	// Neither of these should appear.
+	combined := stdout.String() + stderr.String()
+	require.NotContains(t, combined, "Usage:",
+		"stage error must not print usage block",
+	)
+	require.NotContains(t, combined, "Examples:",
+		"stage error must not print examples block",
+	)
+}

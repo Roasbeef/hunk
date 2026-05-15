@@ -37,6 +37,12 @@ func NewRootCmd() *cobra.Command {
 		Use:     "hunk",
 		Short:   "Sparse partial commits for AI agents",
 		Version: Version,
+		// Cobra prints the full usage block whenever a RunE returns
+		// an error. That hid real failures behind a wall of help text
+		// (e.g. "patch does not apply" buried under flag listings).
+		// Silence usage on errors so callers — including AI agents
+		// piping output — see a clean `Error: ...` line.
+		SilenceUsage: true,
 		Long: `Hunk enables precise, line-level staging for git commits.
 
 Designed for AI agents that need to make surgical changes to codebases,
