@@ -419,13 +419,22 @@ func TestCLIRewordMessagePreservedProperty(t *testing.T) {
 			t.Fatal("expected at least 1 action")
 		}
 
-		// The reword action's message should contain the full
-		// original message text.
+		// The reword action's message should ideally contain the
+		// full original message text. At minimum, all non-comma
+		// content should be preserved; commas may have spaces
+		// inserted around them by the merge-back logic, so we strip
+		// commas from `msg` before comparing. We log rather than
+		// fail because the parser legitimately normalizes some
+		// inputs (e.g. whitespace-only messages collapse to empty),
+		// and the load-bearing assertion is the trailing-pick check
+		// below.
 		got := spec.Actions[0].Message
-		if !strings.Contains(got, strings.ReplaceAll(msg, ",", "")) {
-			// At minimum, all non-comma content should be
-			// preserved. The commas may have spaces inserted
-			// around them by the merge-back logic.
+		stripped := strings.ReplaceAll(msg, ",", "")
+		if !strings.Contains(got, stripped) {
+			t.Logf(
+				"reword message normalized; got %q from %q",
+				got, msg,
+			)
 		}
 
 		// The last action should be the pick.
@@ -446,7 +455,7 @@ func TestJSONSpecRoundTripProperty(t *testing.T) {
 		nActions := rapid.IntRange(1, 5).Draw(t, "nActions")
 		actions := make([]Action, 0, nActions)
 
-		for i := 0; i < nActions; i++ {
+		for range nActions {
 			actionType := rapid.SampledFrom([]ActionType{
 				ActionPick, ActionReword, ActionDrop,
 			}).Draw(t, "actionType")

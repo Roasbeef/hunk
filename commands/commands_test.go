@@ -562,3 +562,316 @@ func main() {}
 	require.NotContains(t, cached, "-func b1()")
 	require.NotContains(t, cached, "+func newB()")
 }
+
+// TestStagePureAddSubrangeInsideStruct is the end-to-end regression test
+// for the silent-misplacement bug originally reported against hunk: when
+// new fields are inserted inside an existing Go struct and the user stages
+// only a sub-range of the new fields, the staged content must land inside
+// the struct body, NOT appended at EOF after `func Helper()`.
+//
+// The bug shape: a pure-addition group with no context lines between the
+// selected sub-range and the surrounding unselected adds emitted a hunk
+// with no anchor, which `git apply --cached` silently fuzzed onto the file
+// boundary. The patch package now coalesces selections within the same
+// pure-add group and walks past unselected additions to grab real anchor
+// context, producing a hunk that places the selected lines exactly where
+// the user expected them.
+func TestStagePureAddSubrangeInsideStruct(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	original := `package foo
+
+type S struct {
+	Field1 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", original)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	// Insert five new fields inside the struct body. The unified diff
+	// will show a single pure-add group from new lines 5..9.
+	modified := `package foo
+
+type S struct {
+	Field1 int
+	Field2 int
+	Field3 int
+	Field4 int
+	Field5 int
+	Field6 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", modified)
+
+	// Stage just the middle two — Field3 and Field4 — exactly the
+	// shape of the original bug report. Without the fix this either
+	// errored out with "patch does not apply" or silently placed the
+	// fields after `func Helper()`.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs([]string{"--dir", dir, "stage", "test.go:6-7"})
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+
+	err := rootCmd.Execute()
+	require.NoError(t, err,
+		"pure-add subrange staging must not error",
+	)
+
+	// The staged version of the file must contain Field3 and Field4
+	// inside the struct, in the original Field-N ordering. The
+	// unselected fields must NOT be staged.
+	staged := gitCmd(t, dir, "show", ":test.go")
+	expected := `package foo
+
+type S struct {
+	Field1 int
+	Field3 int
+	Field4 int
+}
+
+func Helper() {}
+`
+	require.Equal(t, expected, staged,
+		"staged content must place selected fields inside the "+
+			"struct, not at EOF",
+	)
+}
+
+// TestStageNonContiguousAddsInSameGroup is the regression test for the
+// secondary symptom: when two non-adjacent selections target lines in the
+// SAME pure-add group, the two selections must coalesce into one hunk
+// with proper anchor context on both sides. Otherwise the second hunk
+// would lack a leading anchor and `git apply` would silently misplace it.
+func TestStageNonContiguousAddsInSameGroup(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	original := `package foo
+
+type S struct {
+	Field1 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", original)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	modified := fiveFieldStructFile
+	writeFile(t, dir, "test.go", modified)
+
+	// Skip Field3 and Field4 — stage only the first and last new
+	// fields. With the pre-fix code these were two separate blocks
+	// neither of which had complete anchor context.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs([]string{"--dir", dir, "stage", "test.go:5,8"})
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+
+	err := rootCmd.Execute()
+	require.NoError(t, err,
+		"non-contiguous staging within same pure-add group must "+
+			"succeed",
+	)
+
+	staged := gitCmd(t, dir, "show", ":test.go")
+	expected := `package foo
+
+type S struct {
+	Field1 int
+	Field2 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	require.Equal(t, expected, staged,
+		"non-contiguous selection must land adjacently inside the "+
+			"struct in selection order",
+	)
+}
+
+// fiveFieldStructFile is a shared text fixture: a Go file with a struct
+// holding five sequentially-named fields. Several pure-add and
+// pure-delete subrange tests share this exact shape, so we extract it
+// here to avoid stringly-duplicated literals.
+const fiveFieldStructFile = `package foo
+
+type S struct {
+	Field1 int
+	Field2 int
+	Field3 int
+	Field4 int
+	Field5 int
+}
+
+func Helper() {}
+`
+
+// TestStagePureDeleteSubrangeInsideStruct is the symmetric regression
+// test for pure-delete groups: when the user stages a sub-range of
+// deletions inside a larger pure-delete group, the patch must correctly
+// describe the unselected deletions as context lines so git apply
+// accepts it and the staged file retains exactly the unselected lines.
+// Without the fix, the unselected deletion wedged between two selected
+// ones was dropped from the patch body and git apply rejected the patch
+// with "patch does not apply".
+func TestStagePureDeleteSubrangeInsideStruct(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	original := fiveFieldStructFile
+	writeFile(t, dir, "test.go", original)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	// Remove Field2..Field4. Diff has one pure-delete group of 3 lines.
+	modified := `package foo
+
+type S struct {
+	Field1 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", modified)
+
+	// Stage only Field2 and Field4 (old lines 5 and 7), keeping Field3
+	// (old line 6) un-staged inside the group. This is the pure-delete
+	// analogue of TestStageNonContiguousAddsInSameGroup.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs([]string{"--dir", dir, "stage", "test.go:5,7"})
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+
+	err := rootCmd.Execute()
+	require.NoError(t, err,
+		"non-contiguous staging within same pure-delete group "+
+			"must succeed",
+	)
+
+	staged := gitCmd(t, dir, "show", ":test.go")
+	expected := `package foo
+
+type S struct {
+	Field1 int
+	Field3 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	require.Equal(t, expected, staged,
+		"pure-delete subrange must remove selected fields and "+
+			"preserve the unselected one in between",
+	)
+}
+
+// TestStagePureDeleteMiddleOnlySingle covers the single-selection-in-
+// the-middle-of-a-pure-delete-group case. Selecting only the middle of
+// `-B,-C,-D` pre-fix emitted a hunk with no anchor context on either
+// side (both neighbours are unselected deletions). With unselected
+// deletions now re-tagged as context, the hunk picks up `-B` and `-D`
+// as context anchors and the patch applies cleanly.
+func TestStagePureDeleteMiddleOnlySingle(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	original := fiveFieldStructFile
+	writeFile(t, dir, "test.go", original)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	modified := `package foo
+
+type S struct {
+	Field1 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	writeFile(t, dir, "test.go", modified)
+
+	// Stage only Field3 (old line 6) — the middle deletion.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs([]string{"--dir", dir, "stage", "test.go:6"})
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+
+	err := rootCmd.Execute()
+	require.NoError(t, err,
+		"single-selection inside a pure-delete group must succeed",
+	)
+
+	staged := gitCmd(t, dir, "show", ":test.go")
+	expected := `package foo
+
+type S struct {
+	Field1 int
+	Field2 int
+	Field4 int
+	Field5 int
+}
+
+func Helper() {}
+`
+	require.Equal(t, expected, staged,
+		"only the selected deletion must be applied; the "+
+			"surrounding unselected deletions stay in place",
+	)
+}
+
+// TestStageErrorDoesNotPrintUsage verifies the cobra footgun fix: when the
+// stage command's RunE returns an error (e.g., selection doesn't match any
+// line), the command must NOT dump its help text. The help dump made real
+// failures invisible to scripts and AI agents piping stdout/stderr.
+func TestStageErrorDoesNotPrintUsage(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	writeFile(t, dir, "main.go", "package main\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	// Now make a change so there's a diff to operate on.
+	writeFile(t, dir, "main.go", "package main\n// added\n")
+
+	// Select a line number with no matching change.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs(
+		[]string{"--dir", dir, "stage", "main.go:9999"},
+	)
+
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+
+	err := rootCmd.Execute()
+	require.Error(t, err,
+		"selection with no matching lines must return an error",
+	)
+
+	// Cobra writes the help block (signalled by "Usage:" and the
+	// "Examples:" header) on RunE error unless SilenceUsage is set.
+	// Neither of these should appear.
+	combined := stdout.String() + stderr.String()
+	require.NotContains(t, combined, "Usage:",
+		"stage error must not print usage block",
+	)
+	require.NotContains(t, combined, "Examples:",
+		"stage error must not print examples block",
+	)
+}
