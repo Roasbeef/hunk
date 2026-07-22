@@ -56,8 +56,7 @@ func Generate(
 		}
 
 		// Write file header.
-		fmt.Fprintf(&buf, "--- a/%s\n", file.OldName)
-		fmt.Fprintf(&buf, "+++ b/%s\n", file.NewName)
+		writeFileHeader(&buf, file, sel)
 
 		// Write hunks.
 		for _, hunk := range filteredHunks {
@@ -71,6 +70,56 @@ func Generate(
 	}
 
 	return buf.Bytes(), nil
+}
+
+// writeFileHeader writes the "--- "/"+++ " path lines for file, resolving
+// them against /dev/null for additions and deletions per unified-diff
+// convention. A deleted file only targets /dev/null on the new side when sel
+// stages every deletion in the file (isFullDeletion); staging fewer leaves
+// content behind, which is a modification (the file survives under its
+// original name), not a deletion, and must target a real path on both sides
+// or git apply rejects the patch entirely.
+func writeFileHeader(
+	buf *bytes.Buffer, file *diff.FileDiff, sel *diff.FileSelection,
+) {
+	switch {
+	case file.IsNew:
+		fmt.Fprintf(buf, "--- /dev/null\n")
+		fmt.Fprintf(buf, "+++ b/%s\n", file.NewName)
+
+	case file.IsDeleted && isFullDeletion(file, sel):
+		fmt.Fprintf(buf, "--- a/%s\n", file.OldName)
+		fmt.Fprintf(buf, "+++ /dev/null\n")
+
+	case file.IsDeleted:
+		// Partial deletion: the file survives under its original name.
+		fmt.Fprintf(buf, "--- a/%s\n", file.OldName)
+		fmt.Fprintf(buf, "+++ b/%s\n", file.OldName)
+
+	default:
+		fmt.Fprintf(buf, "--- a/%s\n", file.OldName)
+		fmt.Fprintf(buf, "+++ b/%s\n", file.NewName)
+	}
+}
+
+// isFullDeletion reports whether sel stages every deletion line across every
+// hunk of file. A deletion diff (file.IsDeleted) contains only deletion and
+// context lines; if any deletion anywhere in the file is left unstaged, that
+// line remains in the working tree and the file survives, so the generated
+// patch must not target /dev/null on the new side.
+func isFullDeletion(file *diff.FileDiff, sel *diff.FileSelection) bool {
+	for _, hunk := range file.Hunks {
+		for _, line := range hunk.Lines {
+			if line.Op != diff.OpDelete {
+				continue
+			}
+			if !sel.Contains(line.OldLineNum) {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // filterHunks returns hunks containing only the selected lines.
@@ -532,12 +581,42 @@ func effectiveLineNum(line diff.DiffLine) int {
 	return line.OldLineNum
 }
 
+// writeFullFileHeader writes the "--- "/"+++ " path lines for a patch that
+// includes fullDeletion (the entire deletion diff, with nothing left
+// unstaged). Unlike writeFileHeader, callers here always include either every
+// line of the file (GenerateForFile) or the file's one and only hunk
+// (GenerateForHunk on a single-hunk deletion diff), so there is no partial
+// selection to reason about — fullDeletion is computed once by the caller.
+func writeFullFileHeader(
+	buf *bytes.Buffer, file *diff.FileDiff, fullDeletion bool,
+) {
+	switch {
+	case file.IsNew:
+		fmt.Fprintf(buf, "--- /dev/null\n")
+		fmt.Fprintf(buf, "+++ b/%s\n", file.NewName)
+
+	case fullDeletion:
+		fmt.Fprintf(buf, "--- a/%s\n", file.OldName)
+		fmt.Fprintf(buf, "+++ /dev/null\n")
+
+	case file.IsDeleted:
+		// Partial deletion: the file survives under its original name.
+		fmt.Fprintf(buf, "--- a/%s\n", file.OldName)
+		fmt.Fprintf(buf, "+++ b/%s\n", file.OldName)
+
+	default:
+		fmt.Fprintf(buf, "--- a/%s\n", file.OldName)
+		fmt.Fprintf(buf, "+++ b/%s\n", file.NewName)
+	}
+}
+
 // GenerateForFile creates a patch for a single file with all its changes.
 func GenerateForFile(file *diff.FileDiff) []byte {
 	var buf bytes.Buffer
 
-	fmt.Fprintf(&buf, "--- a/%s\n", file.OldName)
-	fmt.Fprintf(&buf, "+++ b/%s\n", file.NewName)
+	// Every hunk is included, so a deletion diff is always a full
+	// deletion here.
+	writeFullFileHeader(&buf, file, file.IsDeleted)
 
 	for _, hunk := range file.Hunks {
 		buf.WriteString(hunk.Header())
@@ -555,8 +634,11 @@ func GenerateForFile(file *diff.FileDiff) []byte {
 func GenerateForHunk(file *diff.FileDiff, hunk *diff.Hunk) []byte {
 	var buf bytes.Buffer
 
-	fmt.Fprintf(&buf, "--- a/%s\n", file.OldName)
-	fmt.Fprintf(&buf, "+++ b/%s\n", file.NewName)
+	// This hunk covers the full deletion only if it's the file's one and
+	// only hunk; a deletion diff split across multiple hunks would leave
+	// the other hunks' deletions unstaged, and the file would survive.
+	fullDeletion := file.IsDeleted && len(file.Hunks) == 1
+	writeFullFileHeader(&buf, file, fullDeletion)
 
 	buf.WriteString(hunk.Header())
 	buf.WriteByte('\n')

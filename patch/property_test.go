@@ -735,6 +735,212 @@ func arbitraryStageProperty(rt *rapid.T) {
 	}
 }
 
+// TestProperty_DeletedFileStageAlwaysApplies is the fuzzer for the file-level
+// deletion header bug: file.NewName is the literal string "/dev/null" for a
+// deleted file, and unconditionally writing "+++ b/%s" produced the malformed
+// path "+++ b//dev/null", which git apply rejected outright regardless of
+// selection. It generates a file of random length, deletes it entirely from
+// the working tree, then stages a random non-empty subset of its lines for
+// deletion. Two invariants hold against real git:
+//
+//   - The generated patch always applies via `git apply --cached`.
+//   - Staging every line truly removes the path from the index; staging a
+//     strict subset leaves the file behind with exactly the unselected lines,
+//     in their original order — a modification, not a deletion.
+func TestProperty_DeletedFileStageAlwaysApplies(t *testing.T) {
+	rapid.Check(t, deletedFileStageProperty)
+}
+
+// deletedFileStageProperty is the shared body driven by both the rapid.Check
+// property and the native fuzz target. See
+// TestProperty_DeletedFileStageAlwaysApplies for the invariants it enforces.
+func deletedFileStageProperty(rt *rapid.T) {
+	{
+		n := rapid.IntRange(1, 10).Draw(rt, "numLines")
+
+		var lines []string
+		for i := range n {
+			lines = append(lines, fmt.Sprintf("line_%d", i))
+		}
+
+		repoDir := newPropertyRepo(rt)
+		path := filepath.Join(repoDir, "del.txt")
+		writeAll(rt, path, lines)
+		runGit(rt, repoDir, "add", "del.txt")
+		runGit(rt, repoDir, "commit", "-q", "-m", "init")
+
+		require.NoError(rt, os.Remove(path))
+
+		diffText := runGit(
+			rt, repoDir, "diff", "--no-color", "--", "del.txt",
+		)
+		parsed, err := diff.Parse(diffText)
+		require.NoError(rt, err)
+
+		mask := rapid.SliceOfN(rapid.Bool(), n, n).Draw(rt, "mask")
+		anySel := false
+		for _, b := range mask {
+			if b {
+				anySel = true
+				break
+			}
+		}
+		if !anySel {
+			mask[0] = true
+		}
+
+		var subset []string
+		for i, b := range mask {
+			if b {
+				subset = append(subset, fmt.Sprintf("%d", i+1))
+			}
+		}
+		sel, err := diff.ParseFileSelection(
+			"del.txt:" + strings.Join(subset, ","),
+		)
+		require.NoError(rt, err)
+
+		patchBytes, err := patch.Generate(
+			parsed, []*diff.FileSelection{sel},
+		)
+		require.NoError(rt, err)
+		require.NotEmpty(rt, patchBytes)
+
+		if err := applyCached(repoDir, patchBytes); err != nil {
+			rt.Fatalf(
+				"git apply --cached rejected patch: %v\n"+
+					"Patch:\n%s",
+				err, patchBytes,
+			)
+		}
+
+		if len(subset) == n {
+			cmd := exec.Command("git", "cat-file", "-e", ":del.txt")
+			cmd.Dir = repoDir
+			err := cmd.Run()
+			require.Error(
+				rt, err,
+				"expected del.txt removed from the index.\n"+
+					"Patch:\n%s", patchBytes,
+			)
+			return
+		}
+
+		var expected []string
+		for i, b := range mask {
+			if !b {
+				expected = append(expected, lines[i])
+			}
+		}
+		got := readStagedFile(rt, repoDir, "del.txt")
+		require.Equal(
+			rt, strings.Join(expected, "\n")+"\n", got,
+			"partial deletion mismatch.\nPatch:\n%s", patchBytes,
+		)
+	}
+}
+
+// TestProperty_NewFileStageAlwaysApplies is the symmetric fuzzer for
+// intent-to-add files. It generates a random-length file, marks it
+// intent-to-add (git add -N, the only way hunk's diff discovers an
+// untracked file), then stages a random non-empty subset of its lines.
+// Every generated patch must apply, and the resulting index must contain
+// exactly the selected lines in their original order.
+func TestProperty_NewFileStageAlwaysApplies(t *testing.T) {
+	rapid.Check(t, newFileStageProperty)
+}
+
+// newFileStageProperty is the shared body driven by both the rapid.Check
+// property and the native fuzz target. See
+// TestProperty_NewFileStageAlwaysApplies for the invariants it enforces.
+func newFileStageProperty(rt *rapid.T) {
+	{
+		n := rapid.IntRange(1, 10).Draw(rt, "numLines")
+
+		var lines []string
+		for i := range n {
+			lines = append(lines, fmt.Sprintf("line_%d", i))
+		}
+
+		repoDir := newPropertyRepo(rt)
+		// A committed seed file keeps the repo non-empty; some git
+		// versions behave oddly diffing an intent-to-add file against
+		// a completely empty repo.
+		seedPath := filepath.Join(repoDir, "seed.txt")
+		writeAll(rt, seedPath, []string{"seed"})
+		runGit(rt, repoDir, "add", "seed.txt")
+		runGit(rt, repoDir, "commit", "-q", "-m", "init")
+
+		path := filepath.Join(repoDir, "new.txt")
+		writeAll(rt, path, lines)
+		runGit(rt, repoDir, "add", "-N", "new.txt")
+
+		diffText := runGit(
+			rt, repoDir, "diff", "--no-color", "--", "new.txt",
+		)
+		parsed, err := diff.Parse(diffText)
+		require.NoError(rt, err)
+
+		mask := rapid.SliceOfN(rapid.Bool(), n, n).Draw(rt, "mask")
+		anySel := false
+		for _, b := range mask {
+			if b {
+				anySel = true
+				break
+			}
+		}
+		if !anySel {
+			mask[0] = true
+		}
+
+		var subset []string
+		var expected []string
+		for i, b := range mask {
+			if b {
+				subset = append(subset, fmt.Sprintf("%d", i+1))
+				expected = append(expected, lines[i])
+			}
+		}
+		sel, err := diff.ParseFileSelection(
+			"new.txt:" + strings.Join(subset, ","),
+		)
+		require.NoError(rt, err)
+
+		patchBytes, err := patch.Generate(
+			parsed, []*diff.FileSelection{sel},
+		)
+		require.NoError(rt, err)
+		require.NotEmpty(rt, patchBytes)
+
+		if err := applyCached(repoDir, patchBytes); err != nil {
+			rt.Fatalf(
+				"git apply --cached rejected patch: %v\n"+
+					"Patch:\n%s",
+				err, patchBytes,
+			)
+		}
+
+		got := readStagedFile(rt, repoDir, "new.txt")
+		require.Equal(
+			rt, strings.Join(expected, "\n")+"\n", got,
+			"staged new-file content mismatch.\nPatch:\n%s",
+			patchBytes,
+		)
+	}
+}
+
+// FuzzStageDeletedFile exposes TestProperty_DeletedFileStageAlwaysApplies as
+// a Go native fuzz target via rapid.MakeFuzz.
+func FuzzStageDeletedFile(f *testing.F) {
+	f.Fuzz(rapid.MakeFuzz(deletedFileStageProperty))
+}
+
+// FuzzStageNewFile exposes TestProperty_NewFileStageAlwaysApplies as a Go
+// native fuzz target via rapid.MakeFuzz.
+func FuzzStageNewFile(f *testing.F) {
+	f.Fuzz(rapid.MakeFuzz(newFileStageProperty))
+}
+
 // joinContent renders file lines as bytes, appending a trailing newline only
 // when trailingNL is set and the file is non-empty. This lets a property
 // generate files with and without a terminating newline.

@@ -227,6 +227,108 @@ func TestGenerateForHunk(t *testing.T) {
 	require.NotContains(t, s, "+    // Second hunk.")
 }
 
+// TestGenerate_DeletedFileHeader is the regression test for a header bug in
+// deletion diffs: file.NewName is the literal string "/dev/null" for a
+// deleted file, so unconditionally writing "+++ b/%s" produced the malformed
+// path "+++ b//dev/null" (double slash, spurious b/ prefix). git apply
+// rejected the resulting patch outright with "error: /dev/null: does not
+// exist in index" — staging a file deletion failed unconditionally,
+// regardless of selection.
+//
+// The fix distinguishes two cases per unified-diff convention: staging every
+// deletion line targets literal /dev/null on the new side (a true deletion);
+// staging a subset leaves content behind, so the file survives and the patch
+// must target the real path on both sides (a modification, not a deletion).
+func TestGenerate_DeletedFileHeader(t *testing.T) {
+	diffText := `diff --git a/del.txt b/del.txt
+deleted file mode 100644
+--- a/del.txt
++++ /dev/null
+@@ -1,4 +0,0 @@
+-d1
+-d2
+-d3
+-d4
+`
+
+	t.Run("full deletion targets /dev/null", func(t *testing.T) {
+		parsed, err := diff.Parse(diffText)
+		require.NoError(t, err)
+
+		sel, err := diff.ParseFileSelection("del.txt:1-4")
+		require.NoError(t, err)
+
+		result, err := patch.Generate(
+			parsed, []*diff.FileSelection{sel},
+		)
+		require.NoError(t, err)
+
+		s := string(result)
+		require.Contains(t, s, "--- a/del.txt")
+		require.Contains(t, s, "+++ /dev/null")
+		require.NotContains(t, s, "b//dev/null")
+	})
+
+	t.Run("partial deletion survives under original name", func(t *testing.T) {
+		parsed, err := diff.Parse(diffText)
+		require.NoError(t, err)
+
+		sel, err := diff.ParseFileSelection("del.txt:2")
+		require.NoError(t, err)
+
+		result, err := patch.Generate(
+			parsed, []*diff.FileSelection{sel},
+		)
+		require.NoError(t, err)
+
+		s := string(result)
+		require.Contains(t, s, "--- a/del.txt")
+		require.Contains(t, s, "+++ b/del.txt")
+		require.NotContains(t, s, "/dev/null")
+	})
+}
+
+// TestGenerate_NewFileHeader verifies the header for an added file targets
+// literal /dev/null (no spurious a/ prefix) on the old side, both for a
+// partial and a full selection of the new content.
+func TestGenerate_NewFileHeader(t *testing.T) {
+	diffText := `diff --git a/new.txt b/new.txt
+new file mode 100644
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1,3 @@
++n1
++n2
++n3
+`
+
+	for _, tc := range []struct {
+		name string
+		sel  string
+	}{
+		{name: "partial selection", sel: "new.txt:2"},
+		{name: "full selection", sel: "new.txt:1-3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := diff.Parse(diffText)
+			require.NoError(t, err)
+
+			sel, err := diff.ParseFileSelection(tc.sel)
+			require.NoError(t, err)
+
+			result, err := patch.Generate(
+				parsed, []*diff.FileSelection{sel},
+			)
+			require.NoError(t, err)
+
+			s := string(result)
+			require.Contains(t, s, "--- /dev/null")
+			require.Contains(t, s, "+++ b/new.txt")
+			require.NotContains(t, s, "a//dev/null")
+		})
+	}
+}
+
 // TestGenerate_NoNewlineAtEOF verifies that "\ No newline at end of file"
 // markers are preserved through patch generation. The underlying go-diff
 // parser strips these markers, so hunk recovers them from the raw text and

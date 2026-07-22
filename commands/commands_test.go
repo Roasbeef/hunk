@@ -682,6 +682,107 @@ func TestStageNoNewlineAtEOF(t *testing.T) {
 	})
 }
 
+// TestStageDeletedFile is the end-to-end regression test for staging a file
+// deletion. file.NewName is the literal string "/dev/null" for a deleted
+// file, so unconditionally writing "+++ b/%s" produced "+++ b//dev/null" —
+// git apply --cached rejected every attempt to stage a deletion with
+// "error: /dev/null: does not exist in index", regardless of selection.
+func TestStageDeletedFile(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	writeFile(t, dir, "del.txt", "d1\nd2\nd3\nd4\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	t.Run("staging every deletion line removes the file", func(t *testing.T) {
+		require.NoError(t, os.Remove(filepath.Join(dir, "del.txt")))
+		defer func() {
+			gitCmd(t, dir, "reset", "-q")
+			gitCmd(t, dir, "checkout", "--", "del.txt")
+		}()
+
+		rootCmd := commands.NewRootCmd()
+		rootCmd.SetArgs([]string{"--dir", dir, "stage", "del.txt:1-4"})
+		rootCmd.SetOut(&bytes.Buffer{})
+		require.NoError(t, rootCmd.Execute())
+
+		status := gitCmd(t, dir, "status", "--short")
+		require.Contains(t, status, "D  del.txt")
+	})
+
+	t.Run("staging a subset leaves the file modified", func(t *testing.T) {
+		require.NoError(t, os.Remove(filepath.Join(dir, "del.txt")))
+		defer func() {
+			gitCmd(t, dir, "reset", "-q")
+			gitCmd(t, dir, "checkout", "--", "del.txt")
+		}()
+
+		rootCmd := commands.NewRootCmd()
+		rootCmd.SetArgs([]string{"--dir", dir, "stage", "del.txt:2"})
+		rootCmd.SetOut(&bytes.Buffer{})
+		require.NoError(t, rootCmd.Execute())
+
+		require.Equal(
+			t, "d1\nd3\nd4\n", gitCmd(t, dir, "show", ":del.txt"),
+		)
+	})
+}
+
+// TestStageNewFile is the end-to-end regression test for staging a
+// newly-added (intent-to-add) file. This path already applied despite the
+// malformed "--- a//dev/null" header, because a pure-addition hunk (@@ -0,0
+// ...@@) has nothing on the old side for git apply to match; the header fix
+// still removes the malformed path for correctness and robustness.
+func TestStageNewFile(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	writeFile(t, dir, "seed.txt", "seed\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	t.Run("partial selection stages only those lines", func(t *testing.T) {
+		writeFile(t, dir, "new.txt", "n1\nn2\nn3\nn4\nn5\n")
+		gitCmd(t, dir, "add", "-N", "new.txt")
+		defer func() {
+			gitCmd(t, dir, "reset", "-q", "--", "new.txt")
+			require.NoError(
+				t, os.Remove(filepath.Join(dir, "new.txt")),
+			)
+		}()
+
+		rootCmd := commands.NewRootCmd()
+		rootCmd.SetArgs([]string{"--dir", dir, "stage", "new.txt:2-3"})
+		rootCmd.SetOut(&bytes.Buffer{})
+		require.NoError(t, rootCmd.Execute())
+
+		require.Equal(
+			t, "n2\nn3\n", gitCmd(t, dir, "show", ":new.txt"),
+		)
+	})
+
+	t.Run("full selection stages the whole file", func(t *testing.T) {
+		writeFile(t, dir, "new.txt", "n1\nn2\nn3\nn4\nn5\n")
+		gitCmd(t, dir, "add", "-N", "new.txt")
+		defer func() {
+			gitCmd(t, dir, "reset", "-q", "--", "new.txt")
+			require.NoError(
+				t, os.Remove(filepath.Join(dir, "new.txt")),
+			)
+		}()
+
+		rootCmd := commands.NewRootCmd()
+		rootCmd.SetArgs([]string{"--dir", dir, "stage", "new.txt:1-5"})
+		rootCmd.SetOut(&bytes.Buffer{})
+		require.NoError(t, rootCmd.Execute())
+
+		require.Equal(
+			t, "n1\nn2\nn3\nn4\nn5\n", gitCmd(t, dir, "show", ":new.txt"),
+		)
+	})
+}
+
 // TestStagePureAddSubrangeInsideStruct is the end-to-end regression test
 // for the silent-misplacement bug originally reported against hunk: when
 // new fields are inserted inside an existing Go struct and the user stages
