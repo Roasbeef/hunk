@@ -71,6 +71,12 @@ func filterHunks(hunks []*diff.Hunk, sel *diff.FileSelection) []*diff.Hunk {
 	return result
 }
 
+// maxContext is the number of anchor context lines emitted on each side of a
+// change block, matching git's default unified-diff context. It also bounds
+// how close two blocks may sit before their context windows overlap and they
+// must be coalesced into a single hunk (see coalesceBlocks).
+const maxContext = 3
+
 // changeBlock represents a contiguous group of selected changes within a hunk.
 // Indices refer to positions in the original hunk's Lines slice.
 type changeBlock struct {
@@ -104,6 +110,15 @@ func filterHunk(hunk *diff.Hunk, sel *diff.FileSelection) []*diff.Hunk {
 	if len(blocks) == 0 {
 		return nil
 	}
+
+	// Coalesce blocks whose context windows would overlap. Two adjacent
+	// blocks each reach up to maxContext lines toward the other; when the
+	// gap between them is small enough, both would emit the SAME context
+	// lines (one as trailing context, the other as leading context),
+	// producing sub-hunks with overlapping old-side ranges that git apply
+	// rejects. Merging them into a single block emits the shared context
+	// once and yields a valid hunk.
+	blocks = coalesceBlocks(hunk, blocks)
 
 	// Build a separate hunk for each block.
 	var result []*diff.Hunk
@@ -232,6 +247,60 @@ func findChangeBlocks(hunk *diff.Hunk, sel *diff.FileSelection) (
 	return blocks, selected
 }
 
+// coalesceBlocks merges adjacent change blocks whose context windows would
+// overlap into single blocks. Each block, when built into its own sub-hunk,
+// reaches up to maxContext context lines toward its neighbor; when the number
+// of context lines between two blocks is <= 2*maxContext, both sub-hunks would
+// claim the same context line(s) — one as trailing context, the other as
+// leading context — producing sub-hunks with overlapping old-side ranges that
+// `git apply` rejects with "patch does not apply". Merging emits the shared
+// context exactly once and mirrors git's own hunk-coalescing rule. Blocks are
+// assumed sorted by startIdx, as findChangeBlocks returns them.
+func coalesceBlocks(hunk *diff.Hunk, blocks []changeBlock) []changeBlock {
+	if len(blocks) <= 1 {
+		return blocks
+	}
+
+	merged := []changeBlock{blocks[0]}
+	for _, next := range blocks[1:] {
+		prev := &merged[len(merged)-1]
+
+		gap := gapContextLines(hunk, prev.endIdx, next.startIdx)
+		if gap <= 2*maxContext {
+			// Extend the previous block to swallow the gap and the
+			// next block; collectHunkIndices renders the shared
+			// context between them once.
+			prev.endIdx = next.endIdx
+			continue
+		}
+
+		merged = append(merged, next)
+	}
+
+	return merged
+}
+
+// gapContextLines counts the lines between two blocks that expandContext would
+// consume from the context budget: real context lines and unselected deletions
+// (re-tagged as context), but NOT unselected additions (which the walk steps
+// past at no cost, so they never anchor a sub-hunk and cannot overlap). This
+// mirrors expandContext so the coalescing decision reflects the context each
+// sub-hunk would actually emit.
+func gapContextLines(hunk *diff.Hunk, start, end int) int {
+	n := 0
+	for i := start; i < end; i++ {
+		line := hunk.Lines[i]
+		switch {
+		case !line.IsChange():
+			n++
+		case line.Op == diff.OpDelete:
+			n++
+		}
+	}
+
+	return n
+}
+
 // buildHunkFromBlock creates a valid hunk from a change block. It walks
 // outward from the block, collecting up to maxContext (3) context lines on
 // each side. The walk handles unselected change lines asymmetrically:
@@ -308,8 +377,6 @@ func buildHunkFromBlock(
 func collectHunkIndices(
 	original *diff.Hunk, block changeBlock, selected []bool,
 ) []lineRef {
-	const maxContext = 3
-
 	// Block lines: real context lines (rare inside a block in
 	// practice) and selected change lines render unchanged.
 	// Unselected ADDITIONS are dropped entirely (they live only in

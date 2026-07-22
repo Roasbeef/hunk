@@ -397,6 +397,202 @@ func splitHunks(patchText string) []string {
 	return hunks
 }
 
+// TestProperty_MultiGroupSelectionAlwaysApplies is the property safeguarding
+// the "partial-hunk staging emits non-applying patches" bug (reported against
+// v1.0.2). It builds a file containing several mixed replacement groups
+// separated by a RANDOM number of context lines — deliberately straddling the
+// 2*maxContext coalescing boundary so some neighbouring groups share context
+// and must coalesce while others stay split. It then stages a random subset
+// of whole groups and asserts two invariants:
+//
+//   - the generated patch applies cleanly via `git apply --cached` (the bug
+//     emitted sub-hunks with overlapping old-side ranges git rejected), and
+//   - the resulting index content equals the original with EXACTLY the
+//     selected groups transformed to their new form and every unselected
+//     group left untouched.
+//
+// Selecting whole groups sidesteps the mixed-group atomicity axis (covered
+// elsewhere) so this property isolates cross-group context coalescing.
+func TestProperty_MultiGroupSelectionAlwaysApplies(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		numGroups := rapid.IntRange(2, 4).Draw(rt, "numGroups")
+
+		// A group is a mixed replacement: delCount old lines removed,
+		// addCount new lines added. gapCount context lines follow the
+		// group (except after the last). Gaps range across the
+		// 2*maxContext=6 boundary so both the coalesce and split paths
+		// are exercised within a single file.
+		type group struct {
+			delCount, addCount, gapAfter int
+			intended                     bool  // Chosen for staging.
+			oldNums, newNums             []int // 1-indexed positions.
+		}
+
+		groups := make([]group, numGroups)
+		anyIntended := false
+		for i := range groups {
+			groups[i] = group{
+				delCount: rapid.IntRange(1, 4).
+					Draw(rt, fmt.Sprintf("del%d", i)),
+				addCount: rapid.IntRange(1, 4).
+					Draw(rt, fmt.Sprintf("add%d", i)),
+				gapAfter: rapid.IntRange(1, 8).
+					Draw(rt, fmt.Sprintf("gap%d", i)),
+				intended: rapid.Bool().
+					Draw(rt, fmt.Sprintf("sel%d", i)),
+			}
+			anyIntended = anyIntended || groups[i].intended
+		}
+		if !anyIntended {
+			groups[0].intended = true
+		}
+
+		// Build the original and modified files line by line, recording
+		// each group's old-file and new-file line numbers so we can (a)
+		// form the selection string and (b) resolve which groups the
+		// tool will actually stage. The FILE:LINES syntax matches
+		// additions by new-line number and deletions by old-line
+		// number in one shared integer space, so a selection integer
+		// aimed at one group's addition can also land on another
+		// group's deletion. We resolve the ACTUAL selection below and
+		// build the expectation from it, keeping this property focused
+		// on patch validity and coalescing rather than selection
+		// parsing.
+		head := []string{"package foo", ""}
+
+		origLines := append([]string{}, head...)
+		modLines := append([]string{}, head...)
+
+		for i := range groups {
+			g := &groups[i]
+			for j := 0; j < g.delCount; j++ {
+				origLines = append(
+					origLines,
+					fmt.Sprintf("g%d_old_%d", i, j),
+				)
+				g.oldNums = append(g.oldNums, len(origLines))
+			}
+			for j := 0; j < g.addCount; j++ {
+				modLines = append(
+					modLines,
+					fmt.Sprintf("g%d_new_%d", i, j),
+				)
+				g.newNums = append(g.newNums, len(modLines))
+			}
+			if i < len(groups)-1 {
+				for j := 0; j < g.gapAfter; j++ {
+					ctx := fmt.Sprintf("ctx_%d_%d", i, j)
+					origLines = append(origLines, ctx)
+					modLines = append(modLines, ctx)
+				}
+			}
+		}
+		tail := "func Tail() {}"
+		origLines = append(origLines, tail)
+		modLines = append(modLines, tail)
+
+		// The selection set: every intended group's added new-line
+		// numbers. New-line numbers are unique per line, so this hits
+		// exactly the intended additions — but the same integers may
+		// also match some unintended group's deletions by old-line.
+		selSet := make(map[int]bool)
+		var selectedNewLines []int
+		for i := range groups {
+			if !groups[i].intended {
+				continue
+			}
+			for _, ln := range groups[i].newNums {
+				selSet[ln] = true
+				selectedNewLines = append(selectedNewLines, ln)
+			}
+		}
+
+		// Resolve the ACTUAL selection: a mixed group is staged in full
+		// if ANY of its additions (by new-line) or deletions (by
+		// old-line) is in the selection set. Build the expected index
+		// from that resolution.
+		hit := func(nums []int) bool {
+			for _, n := range nums {
+				if selSet[n] {
+					return true
+				}
+			}
+			return false
+		}
+
+		expected := append([]string{}, head...)
+		for i := range groups {
+			g := &groups[i]
+			staged := hit(g.newNums) || hit(g.oldNums)
+			if staged {
+				for j := 0; j < g.addCount; j++ {
+					expected = append(
+						expected,
+						fmt.Sprintf("g%d_new_%d", i, j),
+					)
+				}
+			} else {
+				for j := 0; j < g.delCount; j++ {
+					expected = append(
+						expected,
+						fmt.Sprintf("g%d_old_%d", i, j),
+					)
+				}
+			}
+			if i < len(groups)-1 {
+				for j := 0; j < g.gapAfter; j++ {
+					expected = append(
+						expected,
+						fmt.Sprintf("ctx_%d_%d", i, j),
+					)
+				}
+			}
+		}
+		expected = append(expected, tail)
+
+		repoDir := newPropertyRepo(rt)
+		origPath := filepath.Join(repoDir, "test.go")
+		writeAll(rt, origPath, origLines)
+		runGit(rt, repoDir, "add", "test.go")
+		runGit(rt, repoDir, "commit", "-q", "-m", "init")
+
+		writeAll(rt, origPath, modLines)
+
+		diffText := runGit(rt, repoDir, "diff", "--no-color")
+		parsed, err := diff.Parse(diffText)
+		require.NoError(rt, err)
+
+		var parts []string
+		for _, ln := range selectedNewLines {
+			parts = append(parts, fmt.Sprintf("%d", ln))
+		}
+		sel, err := diff.ParseFileSelection(
+			"test.go:" + strings.Join(parts, ","),
+		)
+		require.NoError(rt, err)
+
+		patchBytes, err := patch.Generate(
+			parsed, []*diff.FileSelection{sel},
+		)
+		require.NoError(rt, err)
+		require.NotEmpty(rt, patchBytes)
+
+		if err := applyCached(repoDir, patchBytes); err != nil {
+			rt.Fatalf(
+				"git apply --cached rejected patch: %v\n"+
+					"Patch:\n%s",
+				err, patchBytes,
+			)
+		}
+
+		got := readStagedFile(rt, repoDir, "test.go")
+		require.Equal(
+			rt, strings.Join(expected, "\n")+"\n", got,
+			"staged index mismatch.\nPatch:\n%s", patchBytes,
+		)
+	})
+}
+
 // newPropertyRepo creates a fresh temp git repo for one property
 // iteration. rapid.T does not expose the standard *testing.T cleanup hook
 // so we mop up via t.Cleanup on the underlying t via the rapid harness's

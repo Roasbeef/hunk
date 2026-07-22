@@ -228,7 +228,12 @@ func TestGenerateForHunk(t *testing.T) {
 }
 
 // TestGenerate_NonContiguousSelections tests that non-contiguous line
-// selections within a single hunk are properly split into multiple hunks.
+// selections within a single hunk produce valid patches. Selected change
+// blocks whose context windows would overlap are coalesced into a single
+// hunk (matching git's own hunk granularity); blocks separated by more than
+// 2*maxContext context lines stay split. Coalescing is what keeps the emitted
+// patch appliable: two sub-hunks that each claimed the shared context between
+// them would overlap on the old side and git apply would reject the patch.
 func TestGenerate_NonContiguousSelections(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -254,7 +259,12 @@ func TestGenerate_NonContiguousSelections(t *testing.T) {
  func main() {}
 `,
 			selections: []string{"main.go:2,8"},
-			wantHunks:  2,
+			// The two additions are only a few context lines apart,
+			// so their context windows overlap and coalesce into one
+			// hunk. Emitting two sub-hunks here produced overlapping
+			// old-side ranges (old 1-4 and old 3-6) that git apply
+			// rejected — the original "patch does not apply" bug.
+			wantHunks: 1,
 			validate: func(t *testing.T, result []byte) {
 				s := string(result)
 				require.Contains(t, s, "+// Line 2 - SELECTED.")
@@ -277,7 +287,9 @@ func TestGenerate_NonContiguousSelections(t *testing.T) {
  func c() {}
 `,
 			selections: []string{"main.go:2,6"},
-			wantHunks:  2,
+			// FIRST and LAST are one context line apart, so they
+			// coalesce; MIDDLE (unselected addition) is dropped.
+			wantHunks: 1,
 			validate: func(t *testing.T, result []byte) {
 				s := string(result)
 				require.Contains(t, s, "+// FIRST.")
@@ -344,7 +356,10 @@ func TestGenerate_NonContiguousSelections(t *testing.T) {
  func main() {}
 `,
 			selections: []string{"main.go:2,6"}, // Old file line numbers.
-			wantHunks:  2,
+			// DELETE 1 and DELETE 3 are close enough to coalesce.
+			// The unselected DELETE 2 in between is re-tagged as a
+			// context line, so it must not appear as a deletion.
+			wantHunks: 1,
 			validate: func(t *testing.T, result []byte) {
 				s := string(result)
 				require.Contains(t, s, "-// DELETE 1.")
@@ -392,7 +407,10 @@ func TestGenerate_NonContiguousSelections(t *testing.T) {
  func main() {}
 `,
 			selections: []string{"main.go:2,6,10"},
-			wantHunks:  3,
+			// All three additions sit within a couple context lines
+			// of each other, so they coalesce into a single hunk and
+			// the two unselected additions are dropped.
+			wantHunks: 1,
 			validate: func(t *testing.T, result []byte) {
 				s := string(result)
 				require.Contains(t, s, "+// 2 SELECTED.")
@@ -400,6 +418,87 @@ func TestGenerate_NonContiguousSelections(t *testing.T) {
 				require.Contains(t, s, "+// 10 SELECTED.")
 				require.NotContains(t, s, "+// 4 skip.")
 				require.NotContains(t, s, "+// 8 skip.")
+			},
+		},
+		{
+			// When two selected additions are separated by more
+			// than 2*maxContext (6) context lines, their context
+			// windows do NOT overlap, so they stay as two distinct,
+			// non-overlapping hunks. This guards the split path so
+			// coalescing does not collapse genuinely-separate edits.
+			name: "far-apart additions stay split",
+			diffText: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,9 +1,11 @@
+ package main
++// A SELECTED.
+ l1
+ l2
+ l3
+ l4
+ l5
+ l6
+ l7
++// Z SELECTED.
+ l8
+`,
+			// A is new line 2; Z is new line 10. Seven context
+			// lines (l1-l7) separate them, which exceeds 2*3.
+			selections: []string{"main.go:2,10"},
+			wantHunks:  2,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "+// A SELECTED.")
+				require.Contains(t, s, "+// Z SELECTED.")
+			},
+		},
+		{
+			// Two mixed replacement groups separated by a single
+			// shared context line, both selected. Each group, built
+			// on its own, would claim that shared line — one as
+			// trailing context, one as leading context — producing
+			// overlapping old-side ranges git apply rejects. They
+			// must coalesce into one hunk that emits the shared
+			// context exactly once. This is the exact shape from the
+			// v1.0.2 "partial-hunk staging emits non-applying
+			// patches" report.
+			name: "replacement groups sharing context coalesce",
+			diffText: `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,7 +1,8 @@
+ keepA
+-// del1.
+-// del2.
++// add1.
++// add2.
++// add3.
+ keepB
+-// del3.
+-// del4.
++// add4.
++// add5.
+ keepC
+`,
+			// New lines 2-3 (add1,add2) hit the first group; new
+			// lines 6-7 (add4,add5) hit the second.
+			selections: []string{"main.go:2-3,6-7"},
+			wantHunks:  1,
+			validate: func(t *testing.T, result []byte) {
+				s := string(result)
+				require.Contains(t, s, "-// del1.")
+				require.Contains(t, s, "-// del2.")
+				require.Contains(t, s, "-// del3.")
+				require.Contains(t, s, "-// del4.")
+				require.Contains(t, s, "+// add1.")
+				require.Contains(t, s, "+// add5.")
+
+				// keepB appears exactly once, as context.
+				require.Equal(
+					t, 1,
+					strings.Count(s, " keepB"),
+				)
 			},
 		},
 		{

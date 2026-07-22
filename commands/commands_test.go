@@ -563,6 +563,78 @@ func main() {}
 	require.NotContains(t, cached, "+func newB()")
 }
 
+// TestStageOverlappingContextGroups is the end-to-end regression test for the
+// v1.0.2 report "partial-hunk staging emits non-applying patches". Two mixed
+// replacement groups inside a single hunk are separated by one shared context
+// line. Selecting both groups used to emit two sub-hunks that each claimed
+// that shared line — one as trailing context, one as leading context — so
+// their old-side ranges overlapped and `git apply --cached` rejected the
+// patch with "patch does not apply". The patch package now coalesces blocks
+// whose context windows overlap, emitting the shared context exactly once.
+func TestStageOverlappingContextGroups(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	// Two replacement groups (delA/delB -> addA1..3, delC/delD ->
+	// addC1/addC2) straddle a single preserved context line, keepMid.
+	original := `package main
+
+func top() {}
+// delA.
+// delB.
+// keepMid.
+// delC.
+// delD.
+func bottom() {}
+`
+	writeFile(t, dir, "main.go", original)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	modified := `package main
+
+func top() {}
+// addA1.
+// addA2.
+// addA3.
+// keepMid.
+// addC1.
+// addC2.
+func bottom() {}
+`
+	writeFile(t, dir, "main.go", modified)
+
+	// New line 4 hits the first group; new line 8 hits the second. The
+	// selection spans the shared keepMid context line.
+	rootCmd := commands.NewRootCmd()
+	rootCmd.SetArgs([]string{"--dir", dir, "stage", "main.go:4,8"})
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+
+	err := rootCmd.Execute()
+	require.NoError(
+		t, err, "staging both groups across a shared context line "+
+			"should produce an applying patch",
+	)
+
+	// Both replacement groups landed in the index.
+	cached := gitCmd(t, dir, "diff", "--cached")
+	require.Contains(t, cached, "-// delA.")
+	require.Contains(t, cached, "-// delD.")
+	require.Contains(t, cached, "+// addA1.")
+	require.Contains(t, cached, "+// addC2.")
+
+	// keepMid straddles both groups but is unchanged, so it must not be
+	// staged as a modification. The shared context line survives.
+	require.NotContains(t, cached, "-// keepMid.")
+	require.NotContains(t, cached, "+// keepMid.")
+
+	// The whole change was selected, so nothing modified remains in the
+	// working tree relative to the index.
+	require.Empty(t, gitCmd(t, dir, "diff", "main.go"))
+}
+
 // TestStagePureAddSubrangeInsideStruct is the end-to-end regression test
 // for the silent-misplacement bug originally reported against hunk: when
 // new fields are inserted inside an existing Go struct and the user stages
