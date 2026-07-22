@@ -8,6 +8,23 @@ import (
 	"github.com/roasbeef/hunk/diff"
 )
 
+// noNewlineMarker is the unified-diff sentinel emitted after a line that is
+// the final line of its file side when that file has no trailing newline.
+const noNewlineMarker = "\\ No newline at end of file"
+
+// writeDiffLine writes one diff line to buf followed by a newline, then the
+// "\ No newline at end of file" marker when the line is a newline-less EOF
+// line. Re-emitting the marker keeps the patch consistent with the blob so
+// git apply does not reject it over a phantom trailing newline.
+func writeDiffLine(buf *bytes.Buffer, line diff.DiffLine) {
+	buf.WriteString(line.String())
+	buf.WriteByte('\n')
+	if line.NoNewline {
+		buf.WriteString(noNewlineMarker)
+		buf.WriteByte('\n')
+	}
+}
+
 // Generate creates a patch containing only the selected lines.
 // The patch can be applied with `git apply --cached`.
 func Generate(
@@ -48,8 +65,7 @@ func Generate(
 			buf.WriteByte('\n')
 
 			for _, line := range hunk.Lines {
-				buf.WriteString(line.String())
-				buf.WriteByte('\n')
+				writeDiffLine(&buf, line)
 			}
 		}
 	}
@@ -528,8 +544,7 @@ func GenerateForFile(file *diff.FileDiff) []byte {
 		buf.WriteByte('\n')
 
 		for _, line := range hunk.Lines {
-			buf.WriteString(line.String())
-			buf.WriteByte('\n')
+			writeDiffLine(&buf, line)
 		}
 	}
 
@@ -547,8 +562,7 @@ func GenerateForHunk(file *diff.FileDiff, hunk *diff.Hunk) []byte {
 	buf.WriteByte('\n')
 
 	for _, line := range hunk.Lines {
-		buf.WriteString(line.String())
-		buf.WriteByte('\n')
+		writeDiffLine(&buf, line)
 	}
 
 	return buf.Bytes()

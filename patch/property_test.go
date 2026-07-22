@@ -593,6 +593,202 @@ func TestProperty_MultiGroupSelectionAlwaysApplies(t *testing.T) {
 	})
 }
 
+// TestProperty_ArbitraryStageAlwaysApplies is the broad-spectrum fuzzer for
+// patch generation. Where the other properties pin down specific shapes
+// (pure-add, pure-delete, multi-group), this one generates an ARBITRARY edit
+// of an arbitrary file — random keeps, deletions, and insertion runs — then
+// picks a random subset of the changed lines to stage. It asserts two
+// invariants against real git:
+//
+//   - Validity: for ANY diff and ANY selection, the generated patch applies
+//     cleanly via `git apply --cached`. "patch does not apply" is the exact
+//     failure this whole change set is about, so this is the primary net for
+//     regressions and undiscovered variants.
+//
+//   - Full-selection correctness: selecting EVERY changed line reproduces the
+//     entire diff, so the resulting index must equal the modified file byte
+//     for byte. This guards against a patch that applies but drops or
+//     misplaces content.
+//
+// The generator deliberately mixes deletions and insertions at varying
+// densities so replacement groups, pure-add runs, pure-delete runs, and
+// tightly-spaced groups (which stress context coalescing) all arise.
+func TestProperty_ArbitraryStageAlwaysApplies(t *testing.T) {
+	rapid.Check(t, arbitraryStageProperty)
+}
+
+// FuzzStageArbitrary exposes the arbitrary-stage property as a Go native fuzz
+// target via rapid.MakeFuzz, so `go test -fuzz=FuzzStageArbitrary` drives the
+// same generator through the coverage-guided fuzzing engine and persists any
+// failing corpus entry under testdata/fuzz. It shares its body with
+// TestProperty_ArbitraryStageAlwaysApplies so both entry points hunt the same
+// invariants.
+func FuzzStageArbitrary(f *testing.F) {
+	f.Fuzz(rapid.MakeFuzz(arbitraryStageProperty))
+}
+
+// arbitraryStageProperty is the shared body driven by both the rapid.Check
+// property and the native fuzz target. See TestProperty_ArbitraryStageAlwaysApplies
+// for the invariants it enforces.
+func arbitraryStageProperty(rt *rapid.T) {
+	{
+		n := rapid.IntRange(1, 25).Draw(rt, "numOrig")
+
+		orig := make([]string, n)
+		for i := range orig {
+			orig[i] = fmt.Sprintf("orig_%d", i)
+		}
+
+		// Build the modified file by walking the original: before each
+		// line emit a run of 0-3 brand-new lines, then keep or drop the
+		// original line. A trailing insertion run can append at EOF.
+		insCounter := 0
+		emitInserts := func(label string) []string {
+			k := rapid.IntRange(0, 3).Draw(rt, label)
+			var out []string
+			for range k {
+				out = append(
+					out, fmt.Sprintf("new_%d", insCounter),
+				)
+				insCounter++
+			}
+			return out
+		}
+
+		var modLines []string
+		for i := range n {
+			modLines = append(
+				modLines, emitInserts(fmt.Sprintf("ins%d", i))...,
+			)
+			keep := rapid.Bool().Draw(rt, fmt.Sprintf("keep%d", i))
+			if keep {
+				modLines = append(modLines, orig[i])
+			}
+		}
+		modLines = append(modLines, emitInserts("insTail")...)
+
+		// Randomly drop the trailing newline on either side so the
+		// "\ No newline at end of file" path is exercised too.
+		origNL := rapid.Bool().Draw(rt, "origTrailingNL")
+		newNL := rapid.Bool().Draw(rt, "newTrailingNL")
+
+		origContent := joinContent(orig, origNL)
+		modContent := joinContent(modLines, newNL)
+
+		// Skip iterations that produced no net change: git emits no
+		// diff and there is nothing to stage.
+		if origContent == modContent {
+			return
+		}
+
+		repoDir := newPropertyRepo(rt)
+		path := filepath.Join(repoDir, "test.go")
+		require.NoError(rt, os.WriteFile(path, []byte(origContent), 0o644))
+		runGit(rt, repoDir, "add", "test.go")
+		runGit(rt, repoDir, "commit", "-q", "-m", "init")
+		require.NoError(rt, os.WriteFile(path, []byte(modContent), 0o644))
+
+		diffText := runGit(rt, repoDir, "diff", "--no-color")
+		parsed, err := diff.Parse(diffText)
+		require.NoError(rt, err)
+
+		// Collect every changed line's selection number: additions by
+		// new-line, deletions by old-line — the numbers hunk matches on.
+		var changed []int
+		for file := range parsed.Files() {
+			for _, hunk := range file.Hunks {
+				for _, ln := range hunk.Lines {
+					switch ln.Op {
+					case diff.OpAdd:
+						changed = append(
+							changed, ln.NewLineNum,
+						)
+					case diff.OpDelete:
+						changed = append(
+							changed, ln.OldLineNum,
+						)
+					}
+				}
+			}
+		}
+		require.NotEmpty(rt, changed, "diff must have changed lines")
+
+		// Invariant A: a random non-empty subset always applies.
+		mask := rapid.SliceOfN(
+			rapid.Bool(), len(changed), len(changed),
+		).Draw(rt, "subset")
+		var subset []int
+		for i, b := range mask {
+			if b {
+				subset = append(subset, changed[i])
+			}
+		}
+		if len(subset) == 0 {
+			subset = append(subset, changed[0])
+		}
+		applySelection(rt, repoDir, parsed, subset, nil)
+
+		// Reset the index, then Invariant B: selecting every changed
+		// line reproduces the modified file exactly.
+		runGit(rt, repoDir, "reset", "-q")
+		applySelection(rt, repoDir, parsed, changed, &modContent)
+	}
+}
+
+// joinContent renders file lines as bytes, appending a trailing newline only
+// when trailingNL is set and the file is non-empty. This lets a property
+// generate files with and without a terminating newline.
+func joinContent(lines []string, trailingNL bool) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	s := strings.Join(lines, "\n")
+	if trailingNL {
+		s += "\n"
+	}
+	return s
+}
+
+// applySelection generates a patch for the given selection numbers, applies it
+// via `git apply --cached`, and — when wantContent is non-nil — asserts the
+// resulting index equals it byte for byte. It fails the property with the
+// offending patch on any rejection or mismatch.
+func applySelection(
+	t *rapid.T, repoDir string, parsed *diff.ParsedDiff,
+	nums []int, wantContent *string,
+) {
+	t.Helper()
+
+	var parts []string
+	for _, ln := range nums {
+		parts = append(parts, fmt.Sprintf("%d", ln))
+	}
+	sel, err := diff.ParseFileSelection(
+		"test.go:" + strings.Join(parts, ","),
+	)
+	require.NoError(t, err)
+
+	patchBytes, err := patch.Generate(parsed, []*diff.FileSelection{sel})
+	require.NoError(t, err)
+	require.NotEmpty(t, patchBytes)
+
+	if err := applyCached(repoDir, patchBytes); err != nil {
+		t.Fatalf(
+			"git apply --cached rejected patch: %v\nPatch:\n%s",
+			err, patchBytes,
+		)
+	}
+
+	if wantContent != nil {
+		got := readStagedFile(t, repoDir, "test.go")
+		require.Equal(
+			t, *wantContent, got,
+			"full selection must reproduce the modified file.\n"+
+				"Patch:\n%s", patchBytes,
+		)
+	}
+}
+
 // newPropertyRepo creates a fresh temp git repo for one property
 // iteration. rapid.T does not expose the standard *testing.T cleanup hook
 // so we mop up via t.Cleanup on the underlying t via the rapid harness's

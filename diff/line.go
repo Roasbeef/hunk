@@ -62,6 +62,14 @@ type DiffLine struct {
 	// NewLineNum is the line number in the new file.
 	// Zero if this is a deleted line.
 	NewLineNum int
+
+	// NoNewline is true when this line is the final line of its file
+	// side and that file has no trailing newline. In unified diff format
+	// such a line is followed by a "\ No newline at end of file" marker.
+	// The flag must survive filtering so generated patches re-emit the
+	// marker; without it git apply sees a trailing newline the blob lacks
+	// and rejects the patch.
+	NoNewline bool
 }
 
 // String returns the line in unified diff format.

@@ -227,6 +227,66 @@ func TestGenerateForHunk(t *testing.T) {
 	require.NotContains(t, s, "+    // Second hunk.")
 }
 
+// TestGenerate_NoNewlineAtEOF verifies that "\ No newline at end of file"
+// markers are preserved through patch generation. The underlying go-diff
+// parser strips these markers, so hunk recovers them from the raw text and
+// re-emits them; omitting a marker presents git apply with a trailing newline
+// the blob lacks, and the patch is rejected. The diff below replaces the
+// newline-less final line `c` with a newline-less `c_mod` while inserting `X`
+// higher up — the exact shape that first surfaced the bug.
+func TestGenerate_NoNewlineAtEOF(t *testing.T) {
+	diffText := "diff --git a/f.txt b/f.txt\n" +
+		"--- a/f.txt\n" +
+		"+++ b/f.txt\n" +
+		"@@ -1,3 +1,4 @@\n" +
+		" a\n" +
+		"+X\n" +
+		" b\n" +
+		"-c\n" +
+		"\\ No newline at end of file\n" +
+		"+c_mod\n" +
+		"\\ No newline at end of file\n"
+
+	marker := "\\ No newline at end of file"
+
+	t.Run("select the newline-less replacement", func(t *testing.T) {
+		parsed, err := diff.Parse(diffText)
+		require.NoError(t, err)
+
+		sel, err := diff.ParseFileSelection("f.txt:4")
+		require.NoError(t, err)
+
+		result, err := patch.Generate(
+			parsed, []*diff.FileSelection{sel},
+		)
+		require.NoError(t, err)
+
+		s := string(result)
+		require.Contains(t, s, "-c\n"+marker)
+		require.Contains(t, s, "+c_mod\n"+marker)
+	})
+
+	t.Run("newline-less line pulled in as context", func(t *testing.T) {
+		parsed, err := diff.Parse(diffText)
+		require.NoError(t, err)
+
+		// Staging only the inserted X pulls the newline-less final
+		// line in as trailing context, which must still carry the
+		// marker so the old-side shape matches the blob.
+		sel, err := diff.ParseFileSelection("f.txt:2")
+		require.NoError(t, err)
+
+		result, err := patch.Generate(
+			parsed, []*diff.FileSelection{sel},
+		)
+		require.NoError(t, err)
+
+		s := string(result)
+		require.Contains(t, s, "+X")
+		require.Contains(t, s, " c\n"+marker)
+	})
+}
+
 // TestGenerate_NonContiguousSelections tests that non-contiguous line
 // selections within a single hunk produce valid patches. Selected change
 // blocks whose context windows would overlap are coalesced into a single

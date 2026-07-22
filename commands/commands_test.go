@@ -635,6 +635,53 @@ func bottom() {}
 	require.Empty(t, gitCmd(t, dir, "diff", "main.go"))
 }
 
+// TestStageNoNewlineAtEOF is the end-to-end regression test for files without
+// a trailing newline. git records the "\ No newline at end of file" marker,
+// but the go-diff parser strips it; hunk recovers it from the raw diff and
+// re-emits it. Without that, any patch whose context or change reaches the
+// newline-less final line presents a phantom trailing newline and
+// `git apply --cached` rejects it with "patch does not apply".
+func TestStageNoNewlineAtEOF(t *testing.T) {
+	dir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	// Commit a file with NO trailing newline on its last line.
+	writeFile(t, dir, "main.go", "a\nb\nc")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+
+	// Insert X near the top and rewrite the newline-less last line.
+	writeFile(t, dir, "main.go", "a\nX\nb\nc_mod")
+
+	t.Run("stage insert above newline-less EOF", func(t *testing.T) {
+		defer gitCmd(t, dir, "reset", "-q")
+
+		rootCmd := commands.NewRootCmd()
+		rootCmd.SetArgs([]string{"--dir", dir, "stage", "main.go:2"})
+		rootCmd.SetOut(&bytes.Buffer{})
+		require.NoError(t, rootCmd.Execute())
+
+		// Only X is staged; the final line stays `c` with no newline.
+		require.Equal(
+			t, "a\nX\nb\nc", gitCmd(t, dir, "show", ":main.go"),
+		)
+	})
+
+	t.Run("stage the newline-less replacement", func(t *testing.T) {
+		defer gitCmd(t, dir, "reset", "-q")
+
+		rootCmd := commands.NewRootCmd()
+		rootCmd.SetArgs([]string{"--dir", dir, "stage", "main.go:4"})
+		rootCmd.SetOut(&bytes.Buffer{})
+		require.NoError(t, rootCmd.Execute())
+
+		// c -> c_mod staged, still no trailing newline.
+		require.Equal(
+			t, "a\nb\nc_mod", gitCmd(t, dir, "show", ":main.go"),
+		)
+	})
+}
+
 // TestStagePureAddSubrangeInsideStruct is the end-to-end regression test
 // for the silent-misplacement bug originally reported against hunk: when
 // new fields are inserted inside an existing Go struct and the user stages

@@ -34,7 +34,106 @@ func Parse(diffText string) (*ParsedDiff, error) {
 		parsed.files = append(parsed.files, fd)
 	}
 
+	// go-diff discards "\ No newline at end of file" markers, so recover
+	// the property directly from the raw diff text and tag the affected
+	// lines. Without this the generator emits a trailing newline the blob
+	// lacks and git apply rejects the patch.
+	annotateNoNewline(parsed, diffText)
+
 	return parsed, nil
+}
+
+// annotateNoNewline scans the raw diff text for "\ No newline at end of file"
+// markers and records, per file, whether the old side, the new side, or both
+// lack a trailing newline. It then tags the last old-side line (context or
+// deletion) and last new-side line (context or addition) of each affected
+// file so the generator re-emits the marker. This is necessary because the
+// underlying go-diff parser strips the markers from hunk bodies, losing the
+// old-side marker entirely.
+func annotateNoNewline(parsed *ParsedDiff, diffText string) {
+	type flags struct{ old, new bool }
+
+	perFile := make([]flags, len(parsed.files))
+	fileIdx := -1
+	inBody := false
+	var lastPrefix byte
+
+	for _, raw := range strings.Split(diffText, "\n") {
+		switch {
+		case strings.HasPrefix(raw, "diff --git "):
+			fileIdx++
+			inBody = false
+			lastPrefix = 0
+
+		case strings.HasPrefix(raw, "@@ "):
+			// A diff without a "diff --git" header still opens with
+			// a hunk; treat the first hunk as file 0.
+			if fileIdx < 0 {
+				fileIdx = 0
+			}
+			inBody = true
+			lastPrefix = 0
+
+		case inBody && len(raw) > 0 && raw[0] == '\\':
+			if fileIdx < 0 || fileIdx >= len(perFile) {
+				continue
+			}
+			switch lastPrefix {
+			case '-':
+				perFile[fileIdx].old = true
+			case '+':
+				perFile[fileIdx].new = true
+			case ' ':
+				perFile[fileIdx].old = true
+				perFile[fileIdx].new = true
+			}
+
+		case inBody && len(raw) > 0 &&
+			(raw[0] == ' ' || raw[0] == '+' || raw[0] == '-'):
+			lastPrefix = raw[0]
+		}
+	}
+
+	for i, f := range parsed.files {
+		if perFile[i].old {
+			markLastLine(f, true)
+		}
+		if perFile[i].new {
+			markLastLine(f, false)
+		}
+	}
+}
+
+// markLastLine flags the final line of one file side as newline-less. When
+// old is true it targets the highest-numbered old-side line (context or
+// deletion); otherwise the highest-numbered new-side line (context or
+// addition). A trailing context line owns both sides, so a file whose last
+// line is unchanged and newline-less gets marked once from each call, which
+// is harmless: the generator emits a single marker per emitted line.
+func markLastLine(f *FileDiff, old bool) {
+	bestHunk, bestIdx, bestNum := -1, -1, 0
+	for hi, hunk := range f.Hunks {
+		for li, line := range hunk.Lines {
+			var num int
+			if old {
+				if line.Op == OpAdd {
+					continue
+				}
+				num = line.OldLineNum
+			} else {
+				if line.Op == OpDelete {
+					continue
+				}
+				num = line.NewLineNum
+			}
+			if num >= bestNum {
+				bestNum, bestHunk, bestIdx = num, hi, li
+			}
+		}
+	}
+	if bestHunk >= 0 {
+		f.Hunks[bestHunk].Lines[bestIdx].NoNewline = true
+	}
 }
 
 // Files returns an iterator over all file diffs.
@@ -220,7 +319,10 @@ func convertHunk(h *godiff.Hunk) *Hunk {
 			oldLine++
 
 		case '\\':
-			// Handle "\ No newline at end of file" - skip.
+			// A "\ No newline at end of file" marker never reaches
+			// here: go-diff strips it from the hunk body. We instead
+			// recover the no-newline property from the raw diff text
+			// in annotateNoNewline, called from Parse.
 			continue
 
 		default:
